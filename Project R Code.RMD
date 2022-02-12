@@ -1,0 +1,844 @@
+---
+title: "Assignment 1 A & B"
+author: "Zohaib Sheikh, Shubham Khode, Anirudha Balkrishna"
+date: "07/10/2021"
+output: html_document
+library(tidyverse)
+library(lubridate)
+library(pROC)
+library(readxl)
+library(writexl)
+
+
+#install.packages("writexl")
+#install.packages("readxl")
+
+#1 What is the proportion of defaults ('charged off' vs 'fully paid' loans) in the data?
+#How does default rate vary with loan grade? Does it vary with sub-grade? And is this what you
+#would expect, and why?
+#library(gdata)
+#lcData100K<- read.xls("C:/Users/Balkrishna V/Desktop/UIC/Data Mining - IDS 572/Assignment/lcData100K.xls")
+#View(lcData100K)
+
+lcData100K <- read.csv("C:/Users/Balkrishna V/Desktop/UIC/Data Mining - IDS 572/Assignment/lcData100K.csv")
+df<-lcData100K
+df%>%count(loan_status)%>%mutate(freq = n / sum(n))
+
+df1<-df%>%count(loan_status,grade)%>%pivot_wider(names_from = loan_status, values_from = n)
+colnames(df1)[2:3]<-c('Def','Paid')
+df1
+df1%>%mutate(tot = Def+Paid)%>%mutate(prop_def=Def*100/tot)
+
+df2<-df%>%count(loan_status,sub_grade)%>%pivot_wider(names_from = loan_status, values_from = n)
+colnames(df2)[2:3]<-c('Def','Paid')
+df2
+df2%>%mutate(tot = Def+Paid)%>%mutate(prop_def=Def*100/tot)
+
+#2 How many loans are there in each grade? And do loan amounts vary by grade?
+#Does interest rate for loans vary with grade, subgrade? Look at the average, standard-deviation,
+#min and max of interest rate by grade and subgrade. Is this what you expect, and why? 
+
+df%>%group_by(grade) %>% summarise(n=n(),Tot_amt = sum(loan_amnt))%>%arrange(desc(Tot_amt))
+
+df%>%group_by(grade) %>% summarise(n=n(),Tot_amt = sum(loan_amnt),avg_int_rate=mean(int_rate),std_int_rate=sd(int_rate),min_int_rate=min(int_rate),max_int_rate=max(int_rate))%>%arrange(avg_int_rate)
+df%>%group_by(sub_grade) %>% summarise(n=n(),Tot_amt = sum(loan_amnt),avg_int_rate=mean(int_rate),std_int_rate=sd(int_rate),min_int_rate=min(int_rate),max_int_rate=max(int_rate))%>%arrange(avg_int_rate)
+
+
+#3 For loans which are fully paid back, how does the time-to-full-payoff vary? For this, calculate
+#the 'actual term' (issue-date to last-payment-date) for all loans. How does this actual-term vary
+#by loan grade (a box-plot can help visualize this)
+
+df1<-df%>%mutate(issue_dd=strptime(issue_d,format = "%Y-%m-%d"))%>%filter(loan_status=='Fully Paid')%>%mutate(actual_term=last_pymnt_d-issue_dd)
+df1$acty<-as.duration(df1$actual_term)/dyears(1)
+boxplot(df1$acty~df1$grade)
+boxplot(df1$acty~df1$sub_grade)
+
+#4
+#Calculate the annual return. Show how you calculate the percentage annual return.
+df$ann_return <- ((df$total_pymnt -df$funded_amnt)/df$funded_amnt)*(12/36)*100
+df$ann_return_val <- (df$total_pymnt -df$funded_amnt)*(12/36)
+df%>%select(ann_return)%>%head()
+df%>%filter(loan_status=="Charged Off")%>%group_by(grade)%>%
+  summarise(nLoans=n(), avgInterest= mean(int_rate), stdInterest=sd(int_rate),
+            avgLoanAMt=mean(loan_amnt), avgPmnt=mean(total_pymnt),avgRet_val=mean(ann_return_val),avgRet=mean(ann_return), stdRet=sd(ann_return), minRet=min(ann_return), 
+            maxRet=max(ann_return))
+df%>%filter(loan_status=="Charged Off" & ann_return>0)
+df%>%group_by(grade)%>%summarise(nLoans=n(), avgInterest= mean(int_rate), stdInterest=sd(int_rate),
+                                 avgLoanAMt=mean(loan_amnt), avgPmnt=mean(total_pymnt),avgRet_val=mean(ann_return_val),avgRet=mean(ann_return), stdRet=sd(ann_return), minRet=min(ann_return), 
+                                 maxRet=max(ann_return))
+df%>%filter(loan_status=="Fully Paid")%>%group_by(sub_grade)%>%
+  summarise(nLoans=n(), avgInterest= mean(int_rate), stdInterest=sd(int_rate),
+            avgLoanAMt=mean(loan_amnt), avgPmnt=mean(total_pymnt),avgRet=mean(ann_return), stdRet=sd(ann_return), minRet=min(ann_return), 
+            maxRet=max(ann_return))
+
+#5
+#What are people borrowing money for (purpose)? Examine how many loans, average
+#amounts, etc. by purpose? Do loan amounts vary by purpose? Do defaults vary by purpose?
+#Does loan-grade assigned by Lending Club vary by purpose?
+unique(df$purpose)
+dfb<-df%>%group_by(purpose)%>%
+  summarise(nLoans=n(), avgInterest= mean(int_rate), stdInterest=sd(int_rate),
+            totLoanAMt=sum(loan_amnt),avgLoanAMt=mean(loan_amnt))%>%arrange(desc(nLoans))
+barplot(dfb$nLoans,main="Loans by Purpose",
+        xlab="Purpose")
+dfc<-df%>%group_by(purpose,grade)%>%summarise(ndefault=n())%>%arrange(desc(ndefault))%>%pivot_wider(names_from = grade, values_from = ndefault)
+
+
+#employement_length
+df$ann_return <- ((df$total_pymnt -df$funded_amnt)/df$funded_amnt)*(12/36)*100
+df$emp_length <- factor(df$emp_length, levels=c("n/a", "< 1 year","1 year","2 years", "3 years" ,  "4 years",   "5 years",   "6 years",   "7 years" ,  "8 years", "9 years", "10+ years" ))
+table(df$loan_status, df$emp_length)
+table(df$grade, df$emp_length)
+df %>% group_by(emp_length) %>% summarise(nLoans=n(), defaults=sum(loan_status=="Charged Off"), defaultRate=defaults/nLoans, avgIntRate=mean(int_rate))
+
+#annual_income
+df%>%group_by(grade)%>%summarise(avg_annincm=mean(annual_inc))
+dfi<-df%>%group_by(loan_status)%>%summarise(avg_annincm=mean(annual_inc))
+cor(df$annual_inc,df$loan_amnt,method="pearson")
+df1<-df%>%mutate(issue_dd=strptime(issue_d,format = "%Y-%m-%d"))%>%filter(loan_status=='Fully Paid')%>%mutate(actual_term=last_pymnt_d-issue_dd)
+df1$acty<-as.duration(df1$actual_term)/dyears(1)
+cor(df1$annual_inc,df1$acty,method="pearson")
+
+#7Generate some (at least 3) new derived attributes which you think may be useful for
+#predicting default., and explain what these are. For these, do an analyses as in the questions
+#above (as reasonable based on the derived variables).
+
+#Variable 1 - annualized installment to income ratio
+df$ann_inst_incm_ratio <- (df$installment*12)*100/df$annual_inc
+df$ann_inst_incm_ratio<-round(df$ann_inst_incm_ratio,2)
+view(df$ann_inst_incm_ratio)
+df%>%group_by(grade)%>%summarise(avg_inst_incm_ratio=mean(ann_inst_incm_ratio))
+
+#Variable 2 - loan amount to total current balance ratio
+dfx<-subset(df,df$tot_cur_bal!=0)
+dfx$amt_bal_ratio <- round((dfx$loan_amnt*100/dfx$tot_cur_bal),2)
+sum(is.infinite(dfx$amt_bal_ratio))
+view(dfx$amt_bal_ratio)
+mean(dfx$amt_bal_ratio)
+dfx%>%group_by(grade)%>%summarise(avg_amt_bal_ratio=mean(amt_bal_ratio))
+
+#Variable 3 - Delinquency score
+df$del_score <- df$acc_now_delinq*df$delinq_2yrs
+df%>%group_by(grade)%>%summarise(avg_del_score=mean(del_score))
+
+#Are there missing values? What is the proportion of missing values in different variables?
+#Explain how you will handle missing values for different variables. You should consider what he
+#variable is about, and what missing values may arise from - for example, a variable
+#monthsSinceLastDeliquency may have no value for someone who has not yet had a delinquency;
+#what is a sensible value to replace the missing values in this case?
+# Are there some variables you will exclude from your model due to missing values?
+
+df<-lcData100K
+dim(df)
+str(df)
+colSums(is.na(df))
+df<-df%>%drop_na()
+dim(df)
+dfc<-df%>%select_if(is.character)
+# df <- df %>% na_if(tech_employees, "NA")
+dfc[dfc == "NA"|dfc == "n"|dfc == "n/a"] <- NA
+dfn<-dfc%>%sapply(function(x){sum(is.na(x))})%>%as.data.frame()
+dfn
+library(data.table)
+setDT(dfn, keep.rownames = TRUE)[]
+colnames(dfn)<-c("var","val")
+sum(dfn$val)/nrow(dfn)
+names(dfn)
+str(dfn)
+na_var<- dfn[val>2000]
+str(na_var)
+x<-unique(na_var$var)
+x
+mycols <- names(df) %in% x
+mycols
+newdata <- df[!mycols] 
+str(newdata)
+
+
+r<-newdata%>%select(bc_open_to_buy,percent_bc_gt_75,mths_since_recent_bc,bc_util)%>%sapply(as.numeric)%>%as.data.frame()
+str(r)
+newdata<-cbind(newdata%>%select(-bc_open_to_buy,-percent_bc_gt_75,-mths_since_recent_bc,-bc_util),r)
+newdata[[newdata == "NA"|newdata == "n"|newdata == "n/a"]] <- NA
+colSums(is.na(newdata))
+newdata$bc_open_to_buy[is.na(newdata$bc_open_to_buy)] <- mean(newdata$bc_open_to_buy, na.rm = TRUE)
+newdata$percent_bc_gt_75[is.na(newdata$percent_bc_gt_75)] <- mean(newdata$percent_bc_gt_75, na.rm = TRUE)
+newdata$mths_since_recent_bc[is.na(newdata$mths_since_recent_bc)] <- mean(newdata$mths_since_recent_bc, na.rm = TRUE)
+newdata$bc_util[is.na(newdata$bc_util)] <- mean(newdata$bc_util, na.rm = TRUE)
+colSums(is.na(newdata))
+str(newdata)
+newdata<-newdata%>%drop_na()
+str(newdata)
+
+
+#Q4 Do a univariate analyses to determine which variables (from amongst those you decide to
+#consider for the next stage prediction task) will be individually useful for predicting the
+#dependent variable (loan_status). 
+
+str(newdata)
+
+
+df$loan_status<-as.factor(df$loan_status)
+levels(df$loan_status)
+
+auc(response=df$loan_status, df$loan_amnt)
+# auc(response=df$loan_status, as.numeric(df$emp_length))
+aucsNum<-sapply(df %>% select_if(is.numeric), auc, response=df$loan_status)
+aucsNum<-aucsNum%>%as.data.frame()
+setDT(aucsNum, keep.rownames = TRUE)[]
+colnames(aucsNum)<-c("var","val")
+aucsNum<-aucsNum%>%arrange(desc(val))
+aucAll<- sapply(df %>% mutate_if(is.factor, as.numeric) %>% select_if(is.numeric), auc, response=df$loan_status) 
+aucAll
+m<-aucAll[aucAll>0.5]
+# m<-aucAll
+str(m)
+m<-as.dataframe(m)
+library(data.table)
+setDT(m, keep.rownames = TRUE)[]
+
+str(newdata)
+xd<- newdata%>%select_if(is.POSIXct)
+yd<-newdata%>%select_if(is.character)
+head(xd)
+colz<-names(newdata) %in% m$rn
+zd<-newdata[colz]
+
+
+clean_mod_data<-cbind(xd,yd,zd)
+
+
+
+#Part B Develop decision tree models to predict default.
+
+
+# Excluding Leakage variables
+str(clean_mod_data)
+leakage<- c("funded_amnt","funded_amnt_inv","issue_d","out_prncp","out_prncp_inv","total_pymnt","total_pymnt_inv","total_rec_prncp","total_rec_int","total_rec_late_fee","recoveries","collection_recovery_fee","last_pymnt_d","last_pymnt_amnt","collections_12_mths_ex_med","acc_now_delinq","tot_coll_amt","ann_return","ann_return_val")
+nm<- names(clean_mod_data) %in% leakage
+df_nl<-clean_mod_data[!nm]
+
+
+library(tidyverse)
+library(lubridate)
+library(pROC)
+library(readxl)
+
+#df_nl <- read_excel("C:/Users/Balkrishna V/Desktop/UIC/Data Mining - IDS 572/Assignment/df_nl.xlsx")
+#View(df_nl)
+
+df_nl$loan_status[df_nl$loan_status == 'Fully Paid'] <- 'Non-Default'
+df_nl$loan_status[df_nl$loan_status == 'Charged Off'] <- 'Default'
+unique(df_nl$loan_status)
+df_nl$loan_status<-as.factor(df_nl$loan_status)
+df_nl$term <- NULL
+df_nl$title <- NULL
+df_nl$zip_code <- NULL
+df_nl$hardship_flag <- NULL
+df_nl$disbursement_method <- NULL
+str(df_nl)
+
+
+# (a) Split the data into training and validation sets. What proportions do you consider, why?
+#Split the data into train,test,CV 
+
+
+trn=0.7
+nr<-nrow(df_nl)
+trnd<-sample(1:nr,trn*nr,replace=FALSE)
+train_data<-df_nl[trnd,]
+df_nl2<-df_nl[-trnd,]
+str(train_data)
+
+str(df_nl2)
+cvn=0.5
+nr2<-nrow(df_nl2)
+cv<-sample(1:nr2,cvn*nr2,replace=FALSE)
+cv_data<-df_nl2[cv,]
+
+str(cv_data)
+
+test_data<-df_nl2[-cv,]
+str(test_data)
+
+
+# Train decision tree models (use both rpart, c50)
+# [If something looks too good, it may be due to leakage - make sure you address this]
+# What parameters do you experiment with, and what performance do you obtain (on training
+# and validation sets)? Clearly tabulate your results and briefly describe your findings.
+# How do you evaluate performance - which measure do you consider, and why?
+#Training the Model
+
+library(rpart)
+library('C50')
+
+# Rpart Model
+
+DT1 <- rpart(loan_status ~., data=train_data,
+             method="class", parms = list(split = "gini"), control = rpart.control(cp=0, minsplit = 30))
+help("rpart")
+printcp(DT1)
+par("mar")
+par(mar=c(1,1,1,1))
+plotcp(DT1)
+
+#Model 1
+DT1_pruned <- prune(DT1, cp=0.0012)
+summary(DT1_pruned)
+
+#Model 2
+DT2 <- rpart(loan_status ~., data=train_data,
+             method="class", parms = list(split = "gini",loss=matrix(c(0,10,30,0))), control = rpart.control(cp=0, minsplit = 30))
+
+printcp(DT2)
+par("mar")
+par(mar=c(1,1,1,1))
+plotcp(DT2)
+
+DT2_pruned <- prune(DT2, cp=0.0019)
+summary(DT2_pruned)
+
+par("mar")
+par(mar=c(1,1,1,1))
+dev.new(width=100, height=1000)
+rpart.plot::prp(DT2_pruned, type=2, extra=1)
+# Model Evaluation - Model 1
+
+#0n Training Data
+predTrn1=predict(DT1_pruned, train_data, type='class')
+table(pred = predTrn1, true=train_data$loan_status)
+mean(predTrn1 == train_data$loan_status)
+
+
+#0n validation Data
+predcv1=predict(DT1_pruned, cv_data, type='class')
+table(pred = predcv1, true=cv_data$loan_status)
+mean(predcv1 == cv_data$loan_status)
+
+
+# Model Evaluation - Model 2
+
+#0n Training Data
+predTrn2=predict(DT2_pruned, train_data, type='class')
+table(pred = predTrn2, true=train_data$loan_status)
+mean(predTrn2 == train_data$loan_status)
+
+
+#0n validation Data
+predcv2=predict(DT2_pruned, cv_data, type='class')
+table(pred = predcv2, true=cv_data$loan_status)
+mean(predcv2 == cv_data$loan_status)
+
+
+#Model Evaluation - Lift - Model 1
+pred=predict(DT1_pruned, cv_data, type='prob')
+head(pred)
+trnSc <- cv_data %>% select("loan_status")
+head(trnSc)
+trnSc$score <- pred[, 2]
+head(trnSc)
+trnSc <- trnSc[ order(trnSc$score, decreasing=TRUE),]
+head(trnSc)
+trnSc$cumDefault<-cumsum(trnSc$loan_status == "Non-Default")
+dim(trnSc)
+dev.new(width=50, height=50)
+plot( trnSc$cumDefault, type = "l", xlab='#cases', ylab='#No-default')
+abline(0,max(trnSc$cumDefault)/14981, col="blue")
+
+#Model Evaluation - Decile Lift table
+trnSc["bucket"] <- ntile( -trnSc[,"score"], 10)
+decile1<-trnSc %>% group_by (bucket) %>%
+  summarize (count=n(),
+             noDefaults = sum(loan_status=="Non-Default"),
+             defRate = noDefaults/count,
+             cumDefRate = cumsum(noDefaults)/cumsum(count),
+             lift = cumDefRate/( sum(trnSc$loan_status=="Non-Default")/nrow(trnSc)))
+decile1
+
+
+#Model Evaluation - ROC - Model 1
+
+scoreTst <- predict(DT1_pruned, cv_data, type="prob")[ ,'Non-Default']
+rocPredTst <- prediction(scoreTst, cv_data$loan_status, label.ordering = c('Default', 'Non-Default'))
+perfROCTst <- performance(rocPredTst, "tpr", "fpr")
+plot(perfROCTst)
+
+
+#Model Evaluation - Lift - Model 2
+pred=predict(DT2_pruned, cv_data, type='prob')
+head(pred)
+trnSc <- cv_data %>% select("loan_status")
+head(trnSc)
+trnSc$score <- pred[, 2]
+head(trnSc)
+trnSc <- trnSc[ order(trnSc$score, decreasing=TRUE),]
+head(trnSc)
+trnSc$cumDefault<-cumsum(trnSc$loan_status == "Non-Default")
+dim(trnSc)
+dev.new(width=50, height=50)
+plot( trnSc$cumDefault, type = "l", xlab='#cases', ylab='#No-default')
+abline(0,max(trnSc$cumDefault)/14981, col="blue")
+
+#Model Evaluation - Decile Lift table
+trnSc["bucket"] <- ntile( -trnSc[,"score"], 10)
+decile2<-trnSc %>% group_by (bucket) %>%
+  summarize (count=n(),
+             noDefaults = sum(loan_status=="Non-Default"),
+             defRate = noDefaults/count,
+             cumDefRate = cumsum(noDefaults)/cumsum(count),
+             lift = cumDefRate/( sum(trnSc$loan_status=="Non-Default")/nrow(trnSc)))
+decile2
+
+#Model Evaluation - ROC - Model 2
+
+scoreTst <- predict(DT2_pruned, cv_data, type="prob")[ ,'Non-Default']
+rocPredTst <- prediction(scoreTst, cv_data$loan_status, label.ordering = c('Default', 'Non-Default'))
+perfROCTst <- performance(rocPredTst, "tpr", "fpr")
+plot(perfROCTst)
+
+#library(readxl)
+#df_nl <- read_excel("C:/Users/Balkrishna V/Desktop/UIC/Data Mining - IDS 572/Assignment/df_nl.xlsx")
+#df_nl$loan_status <- as.factor(df_nl$loan_status)
+#str(df_nl)
+#Split the data into train and test data
+
+trnd_rf<-sample(1:nrow(df_nl), 0.8*nrow(df_nl), replace=FALSE)
+train_data_rf<-df_nl[trnd_rf,]
+test_data_rf<-df_nl[-trnd_rf,]
+
+library(randomForest)
+library(ranger)
+
+#Method 1: Using randomForest package
+
+#1)randomForest - no params
+rf.randomForest <- randomForest(loan_status ~., data=train_data_rf)
+
+#Basic evaluation
+tree.Min.OOB.Error <- (which.min(rf.randomForest$err.rate[,1]))
+rf.randomForest$confusion
+accuracy.randomForest <- mean(rf.randomForest$predicted == train_data_rf$loan_status)
+
+best.Tree.Number <- tree.Min.OOB.Error
+best.mtry <- rf.randomForest$mtry
+
+#2)randomForest - with params
+rf.randomForest.Tuned <- randomForest(
+  loan_status ~., 
+  data = train_data_rf, 
+  ntree = best.Tree.Number, #from randomForest implementation with no params 
+  mtry = best.mtry, #from randomForest implementation with no params 
+  importance = TRUE)
+
+#Basic evaluation
+tree.Min.OOB.Error.Tuned = (which.min(rf.randomForest.Tuned$err.rate[,1]))
+rf.randomForest.Tuned$confusion
+accuracy.randomForest.Tuned <- mean(rf.randomForest.Tuned$predicted == train_data_rf$loan_status)
+
+#N vs OOB-error plot
+plot(1:nrow(rf.randomForest$err.rate), rf.randomForest$err.rate[,1], type="l", col="red", xlab="Number of trees", ylab="OOB error")
+abline(v = tree.Min.OOB.Error, col = "darkgreen")
+lines(1:nrow(rf.randomForest.Tuned$err.rate), rf.randomForest.Tuned$err.rate[,1], col="blue")
+abline(v = tree.Min.OOB.Error.Tuned, col = "yellow")
+legend(x = "topright", legend=c("Model 1", "Model 2"), col=c("red", "blue"), lty = 1, cex=0.5)
+
+#Method 2: Using ranger package
+
+#1)ranger - no params
+rf.ranger <- ranger(loan_status ~., data=train_data_rf)
+
+#Basic evaluation
+rf.ranger$prediction.error
+rf.ranger$confusion.matrix
+accuracy.ranger <- mean(rf.ranger$predictions == train_data_rf$loan_status)
+
+#2)ranger - with params
+rf.ranger.Tuned <- ranger(
+  loan_status ~., 
+  data = train_data_rf, 
+  num.trees = rf.ranger$num.trees, #from ranger implementation with no params
+  mtry = rf.ranger$mtry, #from ranger implementation with no params 
+  importance = 'permutation')
+
+#Basic evaluation
+rf.ranger.Tuned$prediction.error
+rf.ranger.Tuned$confusion.matrix
+accuracy.ranger.Tuned <- mean(rf.ranger.Tuned$predictions == train_data_rf$loan_status)
+
+#3)ranger - with params grid 
+
+params_grid <- expand.grid(
+  mtry       = seq(3, 9, by = 2),
+  num.trees  = seq(100, 500, by = 50),
+  importance = c('impurity', 'permutation'),
+  OOB.error  = 0
+)
+
+for(i in 1:nrow(params_grid)) {
+  rfModel <- ranger(
+    formula    = loan_status ~., 
+    data       = train_data_rf, 
+    mtry       = params_grid$mtry[i], 
+    num.trees  = params_grid$num.trees[i],
+    importance = params_grid$importance[i]
+  )
+  params_grid$OOB.error[i] <- rfModel$prediction.error
+}
+
+#Sorting based on OOB errors 
+rf.Model.Eval.Grid <- params_grid %>% dplyr::arrange(OOB.error)
+library("writexl")
+write_xlsx(rf.Model.Eval.Grid,"RFModels.xlsx")
+
+#Model Performance - Test Data 
+
+#Model 1
+pred.randomForest = predict(rf.randomForest, test_data_rf, type='class')
+table(true = test_data_rf$loan_status, pred = pred.randomForest)
+accuracy.pred.randomForest <- mean(pred.randomForest == test_data_rf$loan_status)
+
+#Model 2
+pred.randomForest.Tuned = predict(rf.randomForest.Tuned, test_data_rf, type='class')
+table(true = test_data_rf$loan_status, pred = pred.randomForest.Tuned)
+accuracy.pred.randomForest.Tuned <- mean(pred.randomForest.Tuned == test_data_rf$loan_status)
+
+#Model 3
+pred.ranger = predict(rf.ranger, test_data_rf)
+table(true = test_data_rf$loan_status, pred = pred.ranger$predictions)
+accuracy.pred.ranger <- mean(pred.ranger$predictions == test_data_rf$loan_status)
+
+#Model 4
+pred.ranger.Tuned = predict(rf.ranger.Tuned, test_data_rf)
+table(true = test_data_rf$loan_status, pred = pred.ranger.Tuned$predictions)
+accuracy.pred.ranger.Tuned <- mean(pred.ranger.Tuned$predictions == test_data_rf$loan_status)
+
+#Comparison of above 4 models based on accuracy - Train vs Test
+accuracy <- cbind(c(accuracy.randomForest, 
+                    accuracy.randomForest.Tuned, 
+                    accuracy.ranger, 
+                    accuracy.ranger.Tuned),
+                  c(accuracy.pred.randomForest, 
+                    accuracy.pred.randomForest.Tuned, 
+                    accuracy.pred.ranger, 
+                    accuracy.pred.ranger.Tuned))
+colnames(accuracy) <- c("AccuracyTraining", "AccuracyTesting")
+rownames(accuracy) <- c("randomForest", "randomForest Tuned", "ranger", "ranger Tuned")
+
+#Optimal model based on least OOB error from params grid
+rf.Optimal.Model <- ranger(
+  loan_status ~., 
+  data = train_data_rf, 
+  num.trees = rf.Model.Eval.Grid[1,"num.trees"], 
+  mtry= rf.Model.Eval.Grid[1,"mtry"], 
+  importance = rf.Model.Eval.Grid[1,"importance"])
+
+#Basic evaluation
+rf.Optimal.Model$prediction.error
+rf.Optimal.Model$confusion.matrix
+accuracy.Optimal.Model <- mean(rf.Optimal.Model$predictions == train_data_rf$loan_status)
+
+#Optimal Model Performance - Test Data
+pred.Optimal.Model = predict(rf.Optimal.Model, test_data_rf)
+table(true = test_data_rf$loan_status, pred = pred.Optimal.Model$predictions)
+accuracy.pred.Optimal.Model <- mean(pred.Optimal.Model$predictions == test_data_rf$loan_status)
+
+#Variable importance values for Optimal Model
+rf.Optimal.Model.VarImp <- rf.Optimal.Model$variable.importance %>% as.list() %>% data.frame() 
+rf.Optimal.Model.VarImp <- rf.Optimal.Model.VarImp %>% t() %>% as.data.frame()
+colnames(rf.Optimal.Model.VarImp) <- c("variable.importance")
+rf.Optimal.Model.VarImp <- rf.Optimal.Model.VarImp %>% arrange(desc(variable.importance))
+
+#Plot Variable importance values for Optimal Model
+library(lattice)
+varimps = round(rf.Optimal.Model$variable.importance, 5)
+rev(sort(varimps))
+varimps = varimps[order(varimps)]
+features = names(varimps)
+dotplot(varimps, labels = features,
+        xlab = "Variable Importance", ylab = "Features",
+        panel = function(...) {
+          panel.abline(v = 0, lty = "dotted", col = "black")
+          panel.dotplot(...)
+        },
+        par.settings = list(fontsize = list(text = 12, points = 10))
+)
+par(mfrow = c(1, 1))
+
+#Comparison of all models based on accuracy - Train vs Test
+accuracy <- rbind(accuracy, 
+                  data.frame(
+                    AccuracyTraining = accuracy.Optimal.Model, 
+                    AccuracyTesting = accuracy.pred.Optimal.Model, 
+                    row.names = "Optimal Model"))
+
+#Optimal Model Performance - ROC & Lift
+
+library('ROCR')
+
+#Optimal Model is re-built to get probabilities instead of classes
+rf.Optimal.Model.Prob <- ranger(
+  loan_status ~., 
+  data = train_data_rf, 
+  num.trees = rf.Model.Eval.Grid[1,"num.trees"], 
+  mtry= rf.Model.Eval.Grid[1,"mtry"], 
+  importance = rf.Model.Eval.Grid[1,"importance"],
+  probability = TRUE)
+
+#ROC
+pred.Optimal.Model.Prob = predict(rf.Optimal.Model.Prob, test_data_rf)
+scoreTst_rf <- pred.Optimal.Model.Prob$predictions[ ,'Default']
+rocPredTst_rf <- prediction(scoreTst_rf, test_data_rf$loan_status, label.ordering = c('Non-Default', 'Default'))
+perfROCTst_rf <- performance(rocPredTst_rf, "tpr", "fpr")
+plot(perfROCTst_rf)
+
+#Lift Curve
+testSc_rf <- test_data_rf %>% select("loan_status")
+testSc_rf$score <- pred.Optimal.Model.Prob$predictions[, 2]
+testSc_rf <- testSc_rf[order(testSc_rf$score, decreasing=TRUE),]
+testSc_rf$cumDefault<-cumsum(testSc_rf$loan_status == "Non-Default")
+dev.new(width=50, height=50)
+plot(testSc_rf$cumDefault, type = "l", xlab='Cases', ylab='Non-Default')
+abline(0,max(testSc_rf$cumDefault)/19975, col="blue")
+
+#creating the Optimal RF
+
+#FOr Confusion Matrix on Common test data
+library(ranger)
+rf.opt.Heuristic <- ranger(
+  loan_status ~., 
+  data = train_data, 
+  num.trees = 450 , 
+  mtry= 9, 
+  importance = 'permutation',
+  probability= TRUE
+  )
+
+pred.Optimal.Model1 = predict(rf.opt.Heuristic, test_data)
+table(pred = pred.Optimal.Model1$predictions, true = test_data$loan_status)
+accuracy.pred.Optimal.Model1 <- mean(pred.Optimal.Model1$predictions == test_data$loan_status)
+
+
+#Q7 - Evaluation Of Models
+
+
+library(tidyverse)
+library(lubridate)
+library(pROC)
+library(readxl)
+
+#ascertain Profit & Loss Values
+
+lcData100K <- read.csv("C:/Users/Balkrishna V/Desktop/UIC/Data Mining - IDS 572/Assignment/lcData100K.csv")
+df<-lcData100K
+
+#Loss Value
+
+df$recov <- ((-df$funded_amnt + df$total_pymnt)/df$funded_amnt)*100
+#view(df)
+
+Finalreturn <- df %>% group_by(loan_status) %>%  summarise(mean(recov))
+
+Lossvalue<- (-35.9)
+
+#profit Value
+
+annintavg <- df %>% group_by(loan_status) %>% 
+  summarise(avg_int= mean(int_rate))
+
+Profitvalue<- 35.1
+
+#Cost Matrix
+
+Costmat <- matrix(c(6,6,Lossvalue, Profitvalue),nrow = 2, byrow = TRUE)
+
+
+#Q7(a)
+#Model Evaluation 
+
+#0n test Data
+# default threshold is 0.5
+# models will be compared based on Total Profit Generated (the cost matrix sum)
+
+#Model 1 DT
+testmodel1<- test_data
+predtst1=predict(DT1_pruned, testmodel1, type='class')
+table(pred = predtst1, true=testmodel1$loan_status)
+mean(predtst1 == testmodel1$loan_status)
+
+
+testmodel1$Prob <- (predict(DT1_pruned, testmodel1, type='prob'))
+testmodel1$Pred <- predtst1
+table(pred = predtst1, true=testmodel1$loan_status)
+
+CM1 <- table(pred = predtst1, true=testmodel1$loan_status) * Costmat
+sum(CM1)
+
+
+#Model 2 DT
+testmodel2<- test_data
+predtst2=predict(DT2_pruned, testmodel2, type='class')
+table(pred = predtst2, true=testmodel2$loan_status)
+mean(predtst2 == testmodel2$loan_status)
+
+
+testmodel2$Prob <- (predict(DT2_pruned, testmodel2, type='prob'))
+testmodel2$Pred <- predtst2
+
+CM2 <- table(pred = predtst2, true=testmodel2$loan_status) * Costmat
+sum(CM2)
+
+#random Forest Models
+
+#RF Model1
+trfmodel1<- test_data
+pred.randomForest = predict(rf.randomForest, trfmodel1, type='class')
+table(pred = pred.randomForest, true = trfmodel1$loan_status)
+accuracy.pred.randomForest <- mean(pred.randomForest == trfmodel1$loan_status)
+
+trfmodel1$Prob <- predict(rf.randomForest, trfmodel1, type='prob')
+trfmodel1$Pred <- pred.randomForest
+
+CMRF1 <- table(pred = pred.randomForest, true = trfmodel1$loan_status) * Costmat
+sum(CMRF1)
+
+#RF Model 2
+trfmodel2<- test_data
+pred.randomForest.Tuned = predict(rf.randomForest.Tuned, trfmodel2, type='class')
+table(pred = pred.randomForest.Tuned, true = trfmodel2$loan_status)
+accuracy.pred.randomForest.Tuned <- mean(pred.randomForest.Tuned == trfmodel2$loan_status)
+
+trfmodel2$Prob <- predict(rf.randomForest.Tuned, trfmodel2, type='prob')
+trfmodel2$Pred <- pred.randomForest.Tuned
+
+CMRF2 <- table(pred = pred.randomForest.Tuned, true = trfmodel2$loan_status) * Costmat
+sum(CMRF2)
+
+#RF Model 3
+trfmodel3<- test_data
+pred.ranger = predict(rf.ranger, trfmodel3)
+table(pred = pred.ranger$predictions, true = trfmodel3f$loan_status)
+accuracy.pred.ranger <- mean(pred.ranger$predictions == trfmodel3$loan_status)
+
+trfmodel3$Prob <- predict(rf.ranger, trfmodel3, type = 'prob')
+trfmodel3$Pred <- pred.ranger
+
+CMRF3 <- table(pred = pred.ranger$predictions, true = trfmodel3f$loan_status) * Costmat
+sum(CMRF3)
+
+#RF Model 4
+trfmodel4<- test_data
+
+pred.ranger.Tuned = predict(rf.ranger.Tuned, trfmodel4)
+table(pred = pred.ranger.Tuned$predictions, true = trfmodel4$loan_status)
+accuracy.pred.ranger.Tuned <- mean(pred.ranger.Tuned$predictions == trfmodel4$loan_status)
+
+trfmodel4$Prob <- predict(rf.ranger.Tuned, trfmodel4, type = 'prob')
+trfmodel4$Pred <- pred.ranger.Tuned
+
+CMRF4 <- table(pred = pred.ranger.Tuned$predictions, true = trfmodel4$loan_status) * Costmat
+sum(CMRF4)
+
+#RF Model 5
+trfmodel5<- test_data
+pred.Optimal.ModelRF = predict(rf.opt.Heuristic, trfmodel5, type="response")
+PERR <- rf.opt.Heuristic$prediction.error
+
+table(pred = pred.Optimal.ModelRF$predictions, true = test_data$loan_status)
+
+accuracy.pred.Optimal.ModelRF <- mean(pred.Optimal.ModelRF$predictions == trfmodel5$loan_status)
+
+CMRF5 <- table(pred = pred.Optimal.ModelRF$predictions, true = trfmodel5$loan_status) * Costmat
+sum(CMRF5)
+
+#Threshold Check
+
+#at threshold of n
+
+threshold <- 0.4
+
+#Model 1 DT
+testm1<- testmodel1
+Pthreshold_1 <- as.data.frame(ifelse(predict(DT1_pruned, testm1, type='prob')< threshold,"Non-Default","Default"))
+testm1$Pthreshold_1 <- as.factor(Pthreshold_1$Default)
+#View(testm1)
+table(pred = Pthreshold_1$Default, true=testm1$loan_status)
+mean(testm1$Pthreshold_1 == testm1$loan_status)
+CMtm1 <- table(pred = Pthreshold_1$Default, true=testm1$loan_status) * Costmat
+sum(CMtm1)
+
+
+#Model 2 DT
+testm2<- test_data
+Pthreshold_2 <- as.data.frame(ifelse(predict(DT2_pruned, testm2, type='prob')<threshold,"Non-Default","Default"))
+testm2$Pthreshold_2 <- as.factor(Pthreshold_2$Default)
+#View(testm2)
+table(pred = Pthreshold_2$Default, true=testm2$loan_status)
+
+testm2$Prob <- (predict(DT2_pruned, testmodel2, type='prob'))
+testm2$Pred <- predtst2
+mean(testm2$Pthreshold_2 == testm2$loan_status)
+CMtm2 <- table(pred = Pthreshold_2$Default, true=testm2$loan_status) * Costmat
+sum(CMtm2)
+
+
+
+#Model 1 RF
+testrf1<- test_data
+Pthreshold_rf1 <- as.data.frame(ifelse(predict(rf.randomForest, testrf1, type='prob')<threshold,"Non-Default","Default"))
+testrf1$Pthreshold_rf1 <- as.factor(Pthreshold_rf1$Default)
+table(pred = Pthreshold_rf1$Default, true=testrf1$loan_status)
+mean(testm2$Pthreshold_rf1 == testrf1$loan_status)
+CMTRF1 <- table(pred = Pthreshold_rf1$Default, true=testrf1$loan_status) * Costmat
+sum(CMTRF1)
+
+#Model 2 RF
+testrf2<- test_data
+Pthreshold_rf2 <- as.data.frame(ifelse(predict(rf.randomForest, testrf2, type='prob')<threshold,"Non-Default","Default"))
+testrf1$Pthreshold_rf2 <- as.factor(Pthreshold_rf2$Default)
+table(pred = Pthreshold_rf2$Default, true=testrf2$loan_status)
+mean(testm2$Pthreshold_rf2 == testrf2$loan_status)
+CMTRF2 <- table(pred = Pthreshold_rf2$Default, true=testrf2$loan_status) * Costmat
+sum(CMTRF2)
+
+#Model 3 RF
+testrf3<- test_data
+Pthreshold_rf3 <- as.data.frame(ifelse(predict(rf.ranger, testrf3, type='prob')<threshold,"Non-Default","Default"))
+testrf1$Pthreshold_rf3 <- as.factor(Pthreshold_rf3$Default)
+table(pred = Pthreshold_rf3$Default, true=testrf3$loan_status)
+mean(testm2$Pthreshold_rf3 == testrf3$loan_status)
+CMTRF3 <- table(pred = Pthreshold_rf3$Default, true=testrf3$loan_status) * Costmat
+sum(CMTRF3)
+
+#Model 4 RF
+testrf4<- test_data
+Pthreshold_rf4 <- as.data.frame(ifelse(predict(rf.ranger.Tuned, testrf4, type='prob')<threshold,"Non-Default","Default"))
+testrf1$Pthreshold_rf4 <- as.factor(Pthreshold_rf4$Default)
+table(pred = Pthreshold_rf4$Default, true=testrf4$loan_status)
+mean(testm2$Pthreshold_rf4 == testrf4$loan_status)
+CMTrf4 <- table(pred = Pthreshold_rf4$Default, true=testrf4$loan_status) * Costmat
+sum(CMTrf4)
+
+#Model 5 RF
+testrf5<- test_data
+Pthreshold_rf5 <- as.data.frame(if_else(pred.Optimal.Model1$predictions[,1] > 0.5,"Default","Non-Default"))
+Pthreshold_rf5$Prob <- pred.Optimal.Model1$predictions[,1]
+Pthreshold_rf5$LoanReal <- test_data$loan_status
+Pthreshold_rf5
+testrf1$Pthreshold_rf5 <- as.factor(Pthreshold_rf5$Default)
+table(pred = Pthreshold_rf5$Default, true=testrf5$loan_status)
+mean(testm2$Pthreshold_rf5 == testrf5$loan_status)
+CMTrf5 <- table(pred = Pthreshold_rf5$Default, true=testrf5$loan_status) * Costmat
+sum(CMTrf5)
+
+#Q7(b)
+
+#Model 1 DT
+tm1<- testm1 %>% arrange(desc(testm1$Prob))
+
+#Model 2 DT 
+tm2<- testm2 %>% arrange((testm2$Prob))
+
+#Model RF Optimal
+Pthreshold_rf5 <- as.data.frame(if_else(pred.Optimal.Model1$predictions[,1] > 0.5,"Default","Non-Default"))
+Pthreshold_rf5$Prob <- pred.Optimal.Model1$predictions[,1]
+Pthreshold_rf5$LoanReal <- test_data$loan_status
+Pthreshold_rf5

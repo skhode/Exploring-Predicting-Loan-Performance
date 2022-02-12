@@ -1,0 +1,1576 @@
+---
+title: "Assignment_2_Data_Mining_IDS_572"
+author: "Zohaib Sheikh, Shubham Khode,  Anirudha Balkrishna"
+date: "10/23/2021"
+output: html_document
+
+library(tidyverse)
+library(lubridate)
+library(pROC)
+library(readxl)
+library("writexl")
+library(data.table)
+library(rpart)
+library('C50')
+library(corrplot)
+library(corrr)
+library('glmnet')
+library(broom)
+library('gbm')
+library('ROCR')
+library(caret) 
+
+lcData100K <- read.csv("lcData100K.csv")
+df<-lcData100K
+str(df)
+
+df$emp_length <- factor(df$emp_length, levels=c("n/a", "< 1 year","1 year","2 years", "3 years" ,  "4 years",   "5 years",   "6 years",   "7 years" ,  "8 years", "9 years", "10+ years" ))
+
+# Data Clean
+str(df)
+colSums(is.na(df))
+dfn<-df%>%select_if((colSums(is.na(df))>30000))
+col_na<-colnames(dfn)
+col_na<-as.vector(col_na)
+df<-df%>%select(-(col_na))
+
+# Character Variable Treatment
+str(df)
+df<-df%>%select(-c(emp_title,emp_length))
+str(df)
+dfc<-df%>%select_if(is.character)
+dfc[dfc == "NA"|dfc == "n"|dfc == "n/a"] <- NA
+dfn<-dfc%>%sapply(function(x){sum(is.na(x))})%>%as.data.frame()
+df<-df%>%select(-c(pymnt_plan))
+
+#Numeric Variable Treatment
+str(df)
+colSums(is.na(df))
+unique(df$mths_since_recent_inq)
+df$bc_open_to_buy[is.na(df$bc_open_to_buy)] <- median(df$bc_open_to_buy, na.rm = TRUE)
+df$percent_bc_gt_75[is.na(df$percent_bc_gt_75)] <- median(df$percent_bc_gt_75, na.rm = TRUE)
+df$mths_since_recent_bc[is.na(df$mths_since_recent_bc)] <- median(df$mths_since_recent_bc, na.rm = TRUE)
+df$bc_util[is.na(df$bc_util)] <- median(df$bc_util, na.rm = TRUE)
+df$mo_sin_old_il_acct[is.na(df$mo_sin_old_il_acct)] <- median(df$mo_sin_old_il_acct, na.rm = TRUE)
+df$num_tl_120dpd_2m[is.na(df$num_tl_120dpd_2m)] <- median(df$num_tl_120dpd_2m, na.rm = TRUE)
+df$mths_since_recent_inq[is.na(df$mths_since_recent_inq)] <- median(df$mths_since_recent_inq, na.rm = TRUE)
+df<-df%>%drop_na()
+str(df)
+
+#More Cleaning
+df<-df%>%select(-c(disbursement_method,hardship_flag,policy_code,zip_code,title,term,earliest_cr_line,last_credit_pull_d))
+leakage<- c("funded_amnt","funded_amnt_inv","issue_d","out_prncp","out_prncp_inv","total_pymnt","total_pymnt_inv","total_rec_prncp","total_rec_int","total_rec_late_fee","recoveries","collection_recovery_fee","last_pymnt_d","last_pymnt_amnt","collections_12_mths_ex_med","acc_now_delinq","tot_coll_amt","ann_return")
+nm<- names(df) %in% leakage
+df<-df[!nm]
+str(df)
+df%>%sapply(n_distinct)
+
+df$grade<-as.factor(df$grade)
+df$sub_grade<-as.factor(df$sub_grade)
+df$home_ownership<-as.factor(df$home_ownership)
+df$loan_status<-as.factor(df$loan_status)
+df$purpose<-as.factor(df$purpose)
+df$addr_state<-as.factor(df$addr_state)
+df$debt_settlement_flag<-as.factor(df$debt_settlement_flag)
+df$initial_list_status<-as.factor(df$initial_list_status)
+df$application_type<-as.factor(df$application_type)
+df$verification_status<-as.factor(df$verification_status)
+df$int_rate <- round(df$int_rate)
+df$dti <- round(df$dti)
+str(df)
+df_lm <- df
+
+#Variable Importance
+aucAll<- sapply(df %>% mutate_if(is.factor, as.numeric) %>% select_if(is.numeric), auc, response=df$loan_status) 
+aucAll
+m<-aucAll[aucAll>0.5]
+str(m)
+m<-as.data.frame(m)
+library(data.table)
+setDT(m, keep.rownames = TRUE)[]
+colz<-names(df) %in% m$rn
+zd<-df[colz]
+str(zd)
+df<-zd
+
+#Unclass
+levels(unclass(df$loan_status)-1)
+head(unclass(df$loan_status)-1,20)
+head(df$loan_status,20)
+
+#--------------Q1-----------------------#
+#Split into train cv test
+trn=0.8
+nr<-nrow(df)
+trnd<-sample(1:nr,trn*nr,replace=FALSE)
+train_data<-df[trnd,]
+df_nl2<-df[-trnd,]
+str(train_data)
+cv_data<-df[-trnd,]
+
+#GBM
+gbm_M1 <- gbm(formula=unclass(loan_status)-1 ~.,
+              data=train_data%>%select(-addr_state),
+              distribution = "bernoulli", n.trees=2000, shrinkage=0.01, interaction.depth = 4, 
+              n.minobsinnode =10,bag.fraction=0.5, cv.folds = 5, n.cores=16)
+
+print(gbm_M1)
+summary(gbm_M1, cbars=TRUE)
+
+bestIter<-gbm.perf(gbm_M1, method='cv')
+gbm.perf(gbm_M1)
+help("gbm")
+
+#Performance - ROC
+scores_gbmM1<- predict(gbm_M1, newdata=cv_data, n.tree= bestIter, type="response")
+pred_gbmM1=prediction(scores_gbmM1, cv_data$loan_status, label.ordering = c("Charged Off", "Fully Paid"))
+#label.ordering here specifies the 'negative', 'positive' class labels
+aucPerf_gbmM1 <-performance(pred_gbmM1, "tpr", "fpr")
+plot(aucPerf_gbmM1)
+abline(a=0, b= 1)
+
+#AUC value
+aucPerf_gbmM1=performance(pred_gbmM1, "auc")
+aucPerf_gbmM1@y.values
+
+# Confusion Matrix
+predbin1<- as.factor(ifelse(scores_gbmM1>0.5,1,0))
+cv_data$loan_status<-as.factor(ifelse(cv_data$loan_status=="Fully Paid",1,0))
+confusionMatrix(predbin1,cv_data$loan_status)
+table(Pred = predbin1,True= cv_data$loan_status)
+levels(cv_data$loan_status)
+unique(predbin1)
+
+str(cv_data$loan_status)
+
+# create hyperparameter grid
+hyper_grid <- expand.grid(
+  shrinkage = c(0.001,.01, .1),
+  tree.depth = c(2, 5),
+  optimal_trees = 0,               # a place to dump results
+  min_RMSE = 0                     # a place to dump results
+)
+
+# total number of combinations
+nrow(hyper_grid)
+
+system.time(for(i in 1:nrow(hyper_grid)) {
+  
+  # reproducibility
+  set.seed(123)
+  
+  # train model
+  gbm.tune <- gbm(
+    formula = unclass(loan_status)-1 ~ .,
+    distribution = "bernoulli",
+    data = train_data,
+    n.trees = 3000,
+    interaction.depth = hyper_grid$tree.depth[i],
+    shrinkage = hyper_grid$shrinkage[i],
+    train.fraction = .75,
+    n.cores = NULL, # will use all cores by default
+    verbose = FALSE
+  )
+  
+  # add min training error and trees to grid
+  hyper_grid$optimal_trees[i] <- which.min(gbm.tune$valid.error)
+  hyper_grid$minError[i] <- min(gbm.tune$valid.error)
+}
+)
+
+hyper_grid %>% 
+  dplyr::arrange(min_RMSE) %>%
+  head(10)
+
+#GBM - Model New Parameter
+
+gbm_M1.2 <- gbm(formula=unclass(loan_status)-1 ~.,
+              data=train_data%>%select(-addr_state),
+              distribution = "bernoulli", n.trees=3000, shrinkage=0.001, interaction.depth = 5,
+              bag.fraction=0.5, cv.folds = 5, n.cores=16)
+
+print(gbm_M1.2)
+summary(gbm_M1.2,head(10))
+
+bestIter<-gbm.perf(gbm_M1.2, method='cv')
+gbm.perf(gbm_M1.2)
+
+#Performance - ROC
+scores_gbmM1.2<- predict(gbm_M1.2, newdata=cv_data, n.tree= bestIter, type="response")
+pred_gbmM1.2=prediction(scores_gbmM1.2, cv_data$loan_status)
+#label.ordering here specifies the 'negative', 'positive' class labels
+aucPerf_gbmM1.2 <-performance(pred_gbmM1.2, "tpr", "fpr")
+plot(aucPerf_gbmM1.2)
+abline(a=0, b= 1)
+
+str(cv_data$loan_status)
+
+#AUC value
+aucPerf_gbmM1.2=performance(pred_gbmM1.2, "auc")
+aucPerf_gbmM1.2@y.values
+
+# Confusion Matrix
+
+predbin1.2<- as.factor(ifelse(scores_gbmM1.2>0.5,1,0))
+confusionMatrix(predbin1.2,cv_data$loan_status)
+levels(cv_data$loan_status)
+unique(predbin1.2)
+
+#GBM - Final Model
+
+gbm_M2 <- gbm(formula=unclass(loan_status)-1 ~.,
+              data=train_data%>%select(-addr_state),
+              distribution = "bernoulli", n.trees=2652, shrinkage=0.01, interaction.depth = 2,
+              bag.fraction=0.5, cv.folds = 5, n.cores=16)
+
+print(gbm_M2)
+summary(gbm_M2, cbars=10)
+
+bestIter<-gbm.perf(gbm_M2, method='cv')
+gbm.perf(gbm_M2)
+
+#Performance - ROC
+scores_gbmM2<- predict(gbm_M2, newdata=cv_data, n.tree= bestIter, type="response")
+pred_gbmM2=prediction(scores_gbmM2, cv_data$loan_status)
+#label.ordering here specifies the 'negative', 'positive' class labels
+aucPerf_gbmM2 <-performance(pred_gbmM2, "tpr", "fpr")
+plot(aucPerf_gbmM2)
+abline(a=0, b= 1)
+
+
+#AUC value
+aucPerf_gbmM2=performance(pred_gbmM2, "auc")
+aucPerf_gbmM2@y.values
+
+# Confusion Matrix
+
+predbin<- as.factor(ifelse(scores_gbmM2>0.5,1,0))
+confusionMatrix(predbin,cv_data$loan_status)
+levels(cv_data$loan_status)
+unique(predbin)
+
+str(cv_data$loan_status)
+
+#Cost Matrix 
+
+dfnew<-lcData100K
+str(df)
+
+#Loss Value
+
+dfnew$recov <- ((-dfnew$funded_amnt + dfnew$total_pymnt)/dfnew$funded_amnt)*100
+#view(df)
+
+Finalreturn <- dfnew %>% group_by(loan_status) %>%  summarise(mean(recov))
+
+Lossvalue<- (-35.9)
+
+#profit Value
+
+annintavg <- dfnew %>% group_by(loan_status) %>% 
+  summarise(avg_int= mean(int_rate))
+
+Profitvalue<- 35.1
+
+
+Costmat <- matrix(c(6,6,Lossvalue, Profitvalue),nrow = 2, byrow = TRUE)
+
+#total Profit
+
+#From Model 1
+#at 0.4
+predbin0.4<- as.factor(ifelse(scores_gbmM1>0.4,1,0))
+table(Pred = predbin0.4,True = cv_data$loan_status)
+PM0.4 = table(Pred = predbin0.4,True = cv_data$loan_status) * Costmat
+PM0.4Tot<-  sum(PM0.4)
+Acc0.4 = mean(predbin0.4==cv_data$loan_status)
+
+#at 0.5
+table(Pred = predbin1,True = cv_data$loan_status)
+PM0.5 = table(Pred = predbin1,True = cv_data$loan_status) * Costmat
+PM0.5Tot<-  sum(PM0.5)
+Acc0.5 = mean(predbin1==cv_data$loan_status)
+
+#at 0.6
+predbin0.6<- as.factor(ifelse(scores_gbmM1>0.6,1,0))
+table(Pred = predbin0.6,True = cv_data$loan_status)
+PM0.6 = table(Pred = predbin0.6,True = cv_data$loan_status) * Costmat
+PM0.6Tot<-  sum(PM0.6)
+Acc0.6 = mean(predbin0.6==cv_data$loan_status)
+
+#at 0.7
+predbin0.7<- as.factor(ifelse(scores_gbmM1>0.7,1,0))
+table(Pred = predbin0.7,True = cv_data$loan_status)
+PM0.7 = table(Pred = predbin0.7,True = cv_data$loan_status) * Costmat
+PM0.7Tot<-  sum(PM0.7)
+Acc0.7 = mean(predbin0.7==cv_data$loan_status)
+
+#at 0.8
+predbin0.8<- as.factor(ifelse(scores_gbmM1>0.8,1,0))
+table(Pred = predbin0.8,True = cv_data$loan_status)
+PM0.8 = table(Pred = predbin0.8,True = cv_data$loan_status) * Costmat
+PM0.8Tot<-  sum(PM0.8)
+Acc0.8 = mean(predbin0.8==cv_data$loan_status)
+
+#at 0.9
+predbin0.9<- as.factor(ifelse(scores_gbmM1>0.9,1,0))
+table(Pred = predbin0.9,True = cv_data$loan_status)
+PM0.9 = table(Pred = predbin0.9,True = cv_data$loan_status) * Costmat
+PM0.9Tot<-  sum(PM0.9)
+Acc0.9 = mean(predbin0.9==cv_data$loan_status)
+
+#From Model 1.2
+#at 0.4
+predbin20.4<- as.factor(ifelse(scores_gbmM1.2>0.4,1,0))
+table(Pred = predbin20.4,True = cv_data$loan_status)
+Tbl1 = c(0,0,table(Pred = predbin20.4,True = cv_data$loan_status))
+PM20.4 =  Tbl1 * c(6,6,-35.9,35.1)
+PM20.4Tot<-  sum(PM20.4)
+Acc20.4 = mean(predbin20.4==cv_data$loan_status)
+
+#at 0.5
+predbin20.5<- as.factor(ifelse(scores_gbmM1.2>0.5,1,0))
+table(Pred = predbin20.5,True = cv_data$loan_status)
+PM20.5 = table(Pred = predbin20.5,True = cv_data$loan_status) * Costmat
+PM20.5Tot<-  sum(PM20.5)
+Acc20.5 = mean(predbin21==cv_data$loan_status)
+
+#at 0.6
+predbin20.6<- as.factor(ifelse(scores_gbmM1.2>0.6,1,0))
+table(Pred = predbin20.6,True = cv_data$loan_status)
+PM20.6 = table(Pred = predbin20.6,True = cv_data$loan_status) * Costmat
+PM20.6Tot<-  sum(PM20.6)
+Acc20.6 = mean(predbin20.6==cv_data$loan_status)
+
+#at 0.7
+predbin20.7<- as.factor(ifelse(scores_gbmM1.2>0.7,1,0))
+table(Pred = predbin20.7,True = cv_data$loan_status)
+PM20.7 = table(Pred = predbin20.7,True = cv_data$loan_status) * Costmat
+PM20.7Tot<-  sum(PM20.7)
+Acc20.7 = mean(predbin20.7==cv_data$loan_status)
+
+#at 0.8
+predbin20.8<- as.factor(ifelse(scores_gbmM1.2>0.8,1,0))
+table(Pred = predbin20.8,True = cv_data$loan_status)
+PM20.8 = table(Pred = predbin20.8,True = cv_data$loan_status) * Costmat
+PM20.8Tot<-  sum(PM20.8)
+Acc20.8 = mean(predbin20.8==cv_data$loan_status)
+
+#at 0.9
+predbin20.9<- as.factor(ifelse(scores_gbmM1.2>0.9,1,0))
+table(Pred = predbin20.9,True = cv_data$loan_status)
+PM20.9 = table(Pred = predbin20.9,True = cv_data$loan_status) * Costmat
+PM20.9Tot<-  sum(PM20.9)
+Acc20.9 = mean(predbin20.9==cv_data$loan_status)
+
+  
+#From Model Final
+
+#at 0.4
+predbinF0.4<- as.factor(ifelse(scores_gbmM2>0.4,1,0))
+table(Pred = predbinF0.4,True = cv_data$loan_status)
+PMF0.4 = table(Pred = predbinF0.4,True = cv_data$loan_status) * Costmat
+PMF0.4Tot<-  sum(PMF0.4)
+AccF0.4 = mean(predbinF0.4==cv_data$loan_status)
+
+#at 0.5
+table(Pred = predbin,True = cv_data$loan_status)
+PMF0.5 = table(Pred = predbin,True = cv_data$loan_status) * Costmat
+PMF0.5Tot <-  sum(PMF0.5)
+AccF0.5 = mean(predbin==cv_data$loan_status)
+
+#at 0.6
+predbinF0.6<- as.factor(ifelse(scores_gbmM2>0.6,1,0))
+table(Pred = predbinF0.6,True = cv_data$loan_status)
+PMF0.6 = table(Pred = predbinF0.6,True = cv_data$loan_status) * Costmat
+PMF0.6Tot<-  sum(PMF0.6)
+AccF0.6 = mean(predbinF0.6==cv_data$loan_status)
+
+#at 0.7
+predbinF0.7<- as.factor(ifelse(scores_gbmM2>0.7,1,0))
+table(Pred = predbinF0.7,True = cv_data$loan_status)
+PMF0.7 = table(Pred = predbinF0.7,True = cv_data$loan_status) * Costmat
+PMF0.7Tot<-  sum(PMF0.7)
+AccF0.7 = mean(predbinF0.7==cv_data$loan_status)
+
+#at 0.8
+predbinF0.8<- as.factor(ifelse(scores_gbmM2>0.8,1,0))
+table(Pred = predbinF0.8,True = cv_data$loan_status)
+PMF0.8 = table(Pred = predbinF0.8,True = cv_data$loan_status) * Costmat
+PMF0.8Tot<-  sum(PMF0.8)
+AccF0.8 = mean(predbinF0.8==cv_data$loan_status)
+
+#at 0.9
+predbinF0.9<- as.factor(ifelse(scores_gbmM2>0.9,1,0))
+table(Pred = predbinF0.9,True = cv_data$loan_status)
+PMF0.9 = table(Pred = predbinF0.9,True = cv_data$loan_status) * Costmat
+PMF0.9Tot<-  sum(PMF0.9)
+AccF0.9 = mean(predbinF0.9==cv_data$loan_status)
+
+
+#Profit Curves
+x = seq(0.4, 0.9, by = .1)
+y1= c(PM0.4Tot,PM0.5Tot,PM0.6Tot,PM0.7Tot,PM0.8Tot,PM0.9Tot)
+y1.2 = c(PM20.4Tot,PM20.5Tot,PM20.6Tot,PM20.7Tot,PM20.8Tot,PM20.9Tot)
+y2= c(PMF0.4Tot,PMF0.5Tot,PMF0.6Tot,PMF0.7Tot,PMF0.8Tot,PMF0.9Tot)
+z1= c(Acc0.4,Acc0.5,Acc0.6,Acc0.7,Acc0.8,Acc0.9)
+z1.2 = c(0,0,Acc20.6,Acc20.7,Acc20.8,Acc20.9)
+z2= c(AccF0.4,AccF0.5,AccF0.6,AccF0.7,AccF0.8,AccF0.9)
+ProfCurve <- data.frame(x,y1,y1.2,y2,z1,z1.2,z2)
+pfc=ggplot(data=ProfCurve,aes(x))
+  PC1 = geom_line(aes(y=y1),col="red")
+  PC1.2 = geom_line(aes(y=y1.2),col="blue")
+  PC2 = geom_line(aes(y=y2),col="green")
+PCtot= pfc+PC1+PC1.2+PC2
+  plot(PCtot)
+legend(0.5,40000,c("ROC Model 1","ROC Model 2","ROC Final Model"),col =c("red","blue","green"),lty=1:1) 
+  
+#PC1=plot(x,y1,type="l",col="red",add=TRUE)
+#PC1.2 = plot(x,y1.2,type="l",col="blue",add=TRUE)
+#PC3=lines(x,y2,type="l",col="Green",add=TRUE)
+#PCT=g+PC1+PC2+PC3
+
+
+#combined ROC
+Initial=as.data.frame(c(0,0,0,0,0))
+g=ggplot(data=Initial)
+aucPerf_gbmM1 <-performance(pred_gbmM1, "tpr", "fpr")
+aucPerf_gbmM1.2 <-performance(pred_gbmM1.2, "tpr", "fpr")
+aucPerf_gbmM2 <-performance(pred_gbmM2, "tpr", "fpr")
+ROC1=plot(aucPerf_gbmM1,col="red")
+ROC1.2 = plot(aucPerf_gbmM1.2,add=TRUE,col="blue")
+ROC2=plot(aucPerf_gbmM2,add=TRUE,col="green")
+ROCF= g+ROC1+ROC1.2+ROC2
+legend(0.1,1,c("ROC Model 1","ROC Model 2","ROC Final Model"),col =c("red","blue","green"),lty=1:1)
+
+#--------------Q2--------------------------#
+#Split Data into training and testing sets
+#install.packages('caTools')
+library(caTools)
+set.seed(123)
+split = sample.split(df_lm$loan_status, SplitRatio = 0.8)
+training_set = subset(df_lm, split == TRUE)
+test_set = subset(df_lm, split == FALSE)
+y_train_data<-factor(if_else(training_set$loan_status == "Fully Paid", '1', '0'))
+x_train_data<-training_set %>% select(-loan_status) %>% data.matrix() %>% as.data.frame()
+
+#Model 1 - All in
+#install.packages('glmnet')
+library(glmnet)
+glmBasic <- glm(formula = y_train_data ~ ., data = x_train_data, family = "binomial")
+summary(glmBasic)
+
+#Model 2 - by using variables selected by 'Step-wise Backward Elimination'
+stepBckElim = step(glmBasic, direction = "backward", trace = 0)
+summary(stepBckElim)
+formula(stepBckElim)
+stepBckElim$anova
+
+coefSelected <- names(coef(stepBckElim))[c(-1)] #Keep all, except first coef - 'Intercept' 
+stepBckElimPValues <- summary(stepBckElim)$coefficients[,4]  #pull out p-values
+coefNotSignificant <- names(stepBckElimPValues[stepBckElimPValues > 0.1]) 
+coefSelected <- coefSelected[!coefSelected %in% coefNotSignificant] #Removing variables with Signif. codes: ' '
+x_train_data <- x_train_data %>% select(coefSelected) 
+
+glmTuned <- glm(formula = y_train_data ~ ., data = x_train_data, family = "binomial")
+summary(glmTuned)
+
+#Basic Evaluation
+fitTunedModel <-as.data.frame(if_else(glmTuned$fitted.values > 0.5, 1, 0))
+table(Actual = y_train_data, Predicted = fitTunedModel[,1])
+
+#Evaluation on test data
+y_test_data<-factor(if_else(test_set$loan_status == "Fully Paid", '1', '0'))
+x_test_data<-test_set %>% select(-loan_status) %>% data.matrix() %>% as.data.frame()
+x_test_data <- x_test_data %>% select(coefSelected)
+
+predTunedModel <- predict(glmTuned, newdata = x_test_data, type = "response")
+predTunedModelCls <-as.data.frame(if_else(predTunedModel > 0.5, 1, 0))
+table(Actual = y_test_data, Predicted = predTunedModelCls[,1])
+
+#ROC
+library(ROCR)
+prediction(predTunedModel, y_test_data) %>%
+  performance(measure = "tpr", x.measure = "fpr") %>%
+  plot()
+
+#AUC
+prediction(predTunedModel, y_test_data) %>%
+  performance(measure = "auc") %>%
+  .@y.values
+
+#Reset predictors for regularization
+x_train_data<-training_set %>% select(-loan_status) %>% data.matrix() %>% as.data.frame()
+x_test_data <-test_set %>% select(-loan_status) %>% data.matrix() %>% as.data.frame()
+
+#Model 3 - Regularization - Ridge regression
+glmRidgeReg <- cv.glmnet(data.matrix(x_train_data), y_train_data, family = "binomial", alpha = 0, type.measure="auc")
+glmRidgeReg$cvm[glmRidgeReg$lambda == glmRidgeReg$lambda.min]
+glmRidgeReg$cvm[glmRidgeReg$lambda == glmRidgeReg$lambda.1se]
+summary(glmRidgeReg)
+
+#Visualization
+library(ggplot2)
+library(broom)
+
+plot(glmRidgeReg)
+plot(glmRidgeReg$glmnet.fit, xvar = "lambda")
+abline(v = log(glmRidgeReg$lambda.1se), col = "blue", lty = "dotted")
+
+coef(glmRidgeReg, s = "lambda.1se") %>%
+  tidy() %>%
+  filter(row != "(Intercept)") %>%
+  ggplot(aes(value, reorder(row, value))) +
+  geom_point() +
+  ggtitle("Variable Importance") +
+  xlab("Coefficient") +
+  ylab(NULL)
+
+#Model 4 - Regularization - Lasso regression
+glmLassoReg <- cv.glmnet(data.matrix(x_train_data), y_train_data, family = "binomial", alpha = 1, type.measure="auc")
+glmLassoReg$cvm[glmLassoReg$lambda == glmLassoReg$lambda.min]
+glmLassoReg$cvm[glmLassoReg$lambda == glmLassoReg$lambda.1se]
+summary(glmLassoReg)
+
+#Visualization
+library(ggplot2)
+library(broom)
+
+plot(glmLassoReg)
+plot(glmLassoReg$glmnet.fit, xvar = "lambda")
+abline(v = log(glmLassoReg$lambda.1se), col = "blue", lty = "dotted")
+
+coef(glmLassoReg, s = "lambda.1se") %>%
+  tidy() %>%
+  filter(row != "(Intercept)") %>%
+  ggplot(aes(value, reorder(row, value))) +
+  geom_point() +
+  ggtitle("Variable Importance") +
+  xlab("Coefficient") +
+  ylab(NULL)
+
+#Parameter Tuning - Alpha
+foldId <- sample(1:10, size = length(y_train_data), replace=TRUE)
+
+params_grid <- expand.grid(
+  alpha      = seq(0, 1, by = .1),
+  auc.min    = NA,
+  auc.1se    = NA,
+  lambda.min = NA,
+  lambda.1se = NA
+)
+
+for(i in 1:nrow(params_grid)) {
+  glmModel <- cv.glmnet(data.matrix(x_train_data), 
+                        y_train_data,
+                        family = "binomial",
+                        alpha = params_grid$alpha[i], 
+                        foldid = foldId,
+                        type.measure = "auc")
+  params_grid$auc.min[i]    <- glmModel$cvm[glmModel$lambda == glmModel$lambda.min]
+  params_grid$auc.1se[i]    <- glmModel$cvm[glmModel$lambda == glmModel$lambda.1se]
+  params_grid$lambda.min[i] <- glmModel$lambda.min
+  params_grid$lambda.1se[i] <- glmModel$lambda.1se
+}
+
+library("writexl")
+write_xlsx(params_grid,"auctuningglm.xlsx")
+
+#Optimal Model - Full Lasso
+library(broom)
+nzCoef <- tidy(coef(glmLassoReg, s=glmLassoReg$lambda.1se))
+nzCoefVars <- nzCoef[-1,1]
+x_train_data <- x_train_data %>% select(nzCoefVars)
+
+glmOptimalModel <- glm(formula = y_train_data ~ ., data = x_train_data, family = "binomial")
+summary(glmOptimalModel)
+
+#Basic Evaluation
+fitOptimalModel <-as.data.frame(if_else(glmOptimalModel$fitted.values > 0.5, 1, 0))
+table(Actual = y_train_data, Predicted = fitOptimalModel[,1])
+
+#Evaluation on test data
+y_test_data<-factor(if_else(test_set$loan_status == "Fully Paid", '1', '0'))
+x_test_data<-test_set %>% select(-loan_status) %>% data.matrix() %>% as.data.frame()
+x_test_data <- x_test_data %>% select(nzCoefVars)
+
+predOptimalModel <- predict(glmOptimalModel, newdata = x_test_data, type = "response")
+predOptimalModelCls <-as.data.frame(if_else(predOptimalModel > 0.5, 1, 0))
+table(Actual = y_test_data, Predicted = predOptimalModelCls[,1])
+
+#ROC
+library(ROCR)
+prediction(predOptimalModel, y_test_data) %>%
+  performance(measure = "tpr", x.measure = "fpr") %>%
+  plot()
+
+#AUC
+prediction(predOptimalModel, y_test_data) %>%
+  performance(measure = "auc") %>%
+  .@y.values
+
+#Variable Importance - Backward elimination
+library(caret)
+library(lattice)
+tunedVarImp <-caret::varImp(glmTuned)
+tunedVarImp <- round(with(tunedVarImp, set_names(Overall, rownames(tunedVarImp))), 2)
+rev(sort(tunedVarImp))
+tunedVarImp <- tunedVarImp[order(tunedVarImp)]
+dotplot(tunedVarImp, labels = names(tunedVarImp),
+        xlab = "Variable Importance", ylab = "Features",
+        panel = function(...) {
+          panel.abline(v = 0, lty = "dotted", col = "black")
+          panel.dotplot(...)
+        },
+        par.settings = list(fontsize = list(text = 12, points = 10))
+)
+
+#Variable Importance - Optimal Model
+library(caret)
+library(lattice)
+optMdlVarImp <-caret::varImp(glmOptimalModel)
+optMdlVarImp <- round(with(optMdlVarImp, set_names(Overall, rownames(optMdlVarImp))), 2)
+rev(sort(optMdlVarImp))
+optMdlVarImp <- optMdlVarImp[order(optMdlVarImp)]
+dotplot(optMdlVarImp, labels = names(optMdlVarImp),
+        xlab = "Variable Importance", ylab = "Features",
+        panel = function(...) {
+          panel.abline(v = 0, lty = "dotted", col = "black")
+          panel.dotplot(...)
+        },
+        par.settings = list(fontsize = list(text = 12, points = 10))
+)
+
+#Training Samples  - Small vs Large
+#Change SplitRatio for different values
+
+split_small = sample.split(training_set$loan_status, SplitRatio = 0.99)
+training_set_small = subset(training_set, split_small == TRUE)
+y_train_data_small<-factor(if_else(training_set_small$loan_status == "Fully Paid", '1', '0'))
+x_train_data_small<-training_set_small %>% select(-loan_status) %>% data.matrix() %>% as.data.frame()
+x_train_data_small<-x_train_data_small %>% select(nzCoefVars)
+
+#Model Fit
+glm_small <- glm(formula = y_train_data_small ~ ., data = x_train_data_small, family = "binomial")
+summary(glm_small)
+
+#Test Evaluation 
+y_test_data <-factor(if_else(test_set$loan_status == "Fully Paid", '1', '0'))
+x_test_data <- test_set %>% select(-loan_status) %>% data.matrix() %>% as.data.frame()
+x_test_data <- x_test_data %>% select(nzCoefVars)
+
+glm_fit_small_Test <- predict(glm_small, newdata = x_test_data, type = "response")
+glm_fit_small_Test_Cls <-as.data.frame(if_else(glm_fit_small_Test > 0.5, 1, 0))
+table(Actual = y_test_data, Predicted = glm_fit_small_Test_Cls[,1])
+
+#AUC
+prediction(glm_fit_small_Test, y_test_data) %>%
+  performance(measure = "auc") %>%
+  .@y.values
+
+#Balancing Training Samples
+library(ROSE)
+
+us_lcdfTrn<-ovun.sample(loan_status~., data = training_set, na.action = na.pass, method="under", p=0.5, seed = 123)$data 
+us_lcdfTrn %>% group_by(loan_status) %>% count()
+us_x_train_data<-us_lcdfTrn %>% select(-loan_status) %>% data.matrix() %>% as.data.frame()
+us_x_train_data <- us_x_train_data %>% select(nzCoefVars)
+us_y_train_data<-factor(if_else(us_lcdfTrn$loan_status == "Fully Paid", '1', '0'))
+
+os_lcdfTrn<-ovun.sample(loan_status~., data = training_set, na.action = na.pass, method="over", p=0.5, seed = 123)$data 
+os_lcdfTrn %>% group_by(loan_status) %>% count()
+os_x_train_data<-os_lcdfTrn %>% select(-loan_status) %>% data.matrix() %>% as.data.frame()
+os_x_train_data <- os_x_train_data %>% select(nzCoefVars)
+os_y_train_data<-factor(if_else(os_lcdfTrn$loan_status == "Fully Paid", '1', '0'))
+
+bs_lcdfTrn<-ovun.sample(loan_status~., data = training_set, na.action = na.pass, method="both", p=0.5, seed = 123)$data 
+bs_lcdfTrn %>% group_by(loan_status) %>% count()
+bs_x_train_data<-bs_lcdfTrn %>% select(-loan_status) %>% data.matrix() %>% as.data.frame()
+bs_x_train_data <- bs_x_train_data %>% select(nzCoefVars)
+bs_y_train_data<-factor(if_else(bs_lcdfTrn$loan_status == "Fully Paid", '1', '0'))
+
+us_glm <- glm(formula = us_y_train_data ~ ., data = us_x_train_data, family = "binomial")
+os_glm <- glm(formula = os_y_train_data ~ ., data = os_x_train_data, family = "binomial")
+bs_glm <- glm(formula = bs_y_train_data ~ ., data = bs_x_train_data, family = "binomial")
+
+#Basic Evaluation - US
+us_glm_fit <-as.data.frame(if_else(us_glm$fitted.values > 0.5, 1, 0))
+table(Actual = us_y_train_data, Predicted = us_glm_fit[,1])
+#AUC- US
+prediction(us_glm_fit, us_y_train_data) %>%
+  performance(measure = "auc") %>%
+  .@y.values
+
+#Basic Evaluation - OS
+os_glm_fit <-as.data.frame(if_else(os_glm$fitted.values > 0.5, 1, 0))
+table(Actual = os_y_train_data, Predicted = os_glm_fit[,1])
+#AUC- OS
+prediction(os_glm_fit, os_y_train_data) %>%
+  performance(measure = "auc") %>%
+  .@y.values
+
+#Basic Evaluation - BS
+bs_glm_fit <-as.data.frame(if_else(bs_glm$fitted.values > 0.5, 1, 0))
+table(Actual = bs_y_train_data, Predicted = bs_glm_fit[,1])
+#AUC- BS
+prediction(bs_glm_fit, bs_y_train_data) %>%
+  performance(measure = "auc") %>%
+  .@y.values
+
+#Evaluation on Test
+y_test_data <-factor(if_else(test_set$loan_status == "Fully Paid", '1', '0'))
+x_test_data <- test_set %>% select(-loan_status) %>% data.matrix() %>% as.data.frame()
+x_test_data <- x_test_data %>% select(nzCoefVars)
+
+glm_fit_smp <- predict(us_glm, newdata = x_test_data, type = "response")
+glm_fit_smp_Cls <-as.data.frame(if_else(glm_fit_smp > 0.5, 1, 0))
+table(Actual = y_test_data, Predicted = glm_fit_smp_Cls[,1])
+
+#ROC
+library(ROCR)
+prediction(glm_fit_smp, y_test_data) %>%
+  performance(measure = "tpr", x.measure = "fpr") %>%
+  plot()
+
+#AUC
+prediction(glm_fit_smp, y_test_data) %>%
+  performance(measure = "auc") %>%
+  .@y.values
+
+#-----------------------Q3-------------------------#
+#More Cleaning
+df<-df%>%select(-c(disbursement_method,hardship_flag,policy_code,zip_code,title,term,earliest_cr_line,last_credit_pull_d))
+# leakage<- c("funded_amnt","funded_amnt_inv","issue_d","out_prncp","out_prncp_inv","total_pymnt","total_pymnt_inv","total_rec_prncp","total_rec_int","total_rec_late_fee","recoveries","collection_recovery_fee","last_pymnt_d","last_pymnt_amnt","collections_12_mths_ex_med","acc_now_delinq","tot_coll_amt")
+leakage<- c("issue_d","total_pymnt","total_pymnt_inv","funded_amnt","funded_amnt_inv","out_prncp","out_prncp_inv","total_rec_prncp","total_rec_int","total_rec_late_fee","recoveries","collection_recovery_fee","last_pymnt_d","tot_coll_amt")
+nm<- names(df) %in% leakage
+df<-df[!nm]
+str(df)
+df%>%sapply(n_distinct)
+
+df$grade<-as.factor(df$grade)
+df$sub_grade<-as.factor(df$sub_grade)
+df$home_ownership<-as.factor(df$home_ownership)
+df$loan_status<-as.factor(df$loan_status)
+df$purpose<-as.factor(df$purpose)
+df$addr_state<-as.factor(df$addr_state)
+df$debt_settlement_flag<-as.factor(df$debt_settlement_flag)
+df$initial_list_status<-as.factor(df$initial_list_status)
+df$application_type<-as.factor(df$application_type)
+df$verification_status<-as.factor(df$verification_status)
+str(df)
+
+# Variable Importance - Correlation
+df_c<-df%>%select_if(is.numeric)
+df_c.cor<-cor(df_c)
+df_c.cor%>%view
+dev.new(width=50, height=50)
+corrplot(df_c.cor)
+
+thres = 0.6
+df_c.cor[upper.tri(df_c.cor, diag=TRUE)] <- NA
+df_cc <- as.data.frame(as.table(df_c.cor))
+df_cc<-na.omit(df_cc)
+df_cc%>%view()
+mean(abs(df_cc$Freq))
+df_cc%>%filter(df_cc$Var1=='ann_return')%>%arrange(desc(Freq))
+df_cc_th <- df_cc %>% filter(abs(Freq) < thres )
+df_cc_th <- df_cc_th[order(-abs(df_cc_th$Freq)),]
+dim(df_cc_th)
+df_cc_th_w <- df_cc_th %>% pivot_wider(names_from = Var2, values_from = Freq)
+df_cc_th_w<-column_to_rownames(df_cc_th_w, var="Var1")
+df_cc_th_w%>%view()
+dev.new(width=50, height=50)
+corrplot(as.matrix(df_cc_th_w), is.corr=FALSE, na.label=" ", method="circle")
+
+
+#Split into train cv test
+
+trn=0.8
+nr<-nrow(df)
+trnd<-sample(1:nr,trn*nr,replace=FALSE)
+train_data<-df[trnd,]
+df_nl2<-df[-trnd,]
+str(train_data)
+
+cv_data<-df[-trnd,]
+
+
+#Basic Regression Model - Lasso
+train_data1<-train_data %>% select(-ann_return)
+glmfit<- cv.glmnet(data.matrix(train_data1), train_data$ann_return, family="gaussian")
+dev.new(width=50, height=50)
+plot(glmfit)
+print(glmfit)
+
+l.lasso.1se <- glmfit$lambda.1se
+lasso.model <- glmnet(x=data.matrix(train_data1), y=train_data$ann_return,
+                      alpha  = 1, 
+                      lambda = l.lasso.1se)
+lasso.model$beta 
+
+y<-cv_data %>% select(ann_return)
+cv_data1<-cv_data %>% select(-ann_return)
+y_predicted <- predict(lasso.model, newx = data.matrix(cv_data1))
+mean_y<-lapply(y, mean, na.rm = TRUE)
+sst <- sum((y - mean_y)^2)
+sst
+sse <- sum((y_predicted - y)^2)
+sse
+
+# R squared
+rsq <- 1 - sse / sst
+rsq
+
+
+#Basic Regression Model - Ridge
+train_data1<-train_data %>% select(-ann_return,-loan_status)
+glmfit<- cv.glmnet(data.matrix(train_data1), train_data$ann_return, family="gaussian",alpha=0)
+dev.new(width=50, height=50)
+plot(glmfit)
+print(glmfit)
+coef(glmfit,s="lambda.min")
+
+l.ridge.min <- glmfit$lambda.min
+ridge.model <- glmnet(x=data.matrix(train_data1), y=train_data$ann_return,
+                      alpha  = 0, 
+                      lambda = l.ridge.min)
+ridge.model$beta 
+
+y<-cv_data %>% select(ann_return)
+cv_data1<-cv_data %>% select(-ann_return)
+y_predicted <- predict(ridge.model, newx = data.matrix(cv_data1))
+mean_y<-lapply(y, mean, na.rm = TRUE)
+sst <- sum((y - mean_y)^2)
+sst
+sse <- sum((y_predicted - y)^2)
+sse
+
+# R squared
+rsq <- 1 - sse / sst
+rsq
+
+# Final Model - Linear
+
+train_data1<-train_data %>% select(-ann_return)
+glmfit<- cv.glmnet(data.matrix(train_data1), train_data$ann_return, family="gaussian")
+dev.new(width=50, height=50)
+plot(glmfit)
+print(glmfit)
+
+l.lasso.1se <- glmfit$lambda.1se
+lasso.model <- glmnet(x=data.matrix(train_data1), y=train_data$ann_return,
+                      alpha  = 1, family="gaussian", 
+                      lambda = l.lasso.1se)
+lasso.model$beta 
+
+plot(lasso.model)
+
+y<-cv_data %>% select(ann_return)
+cv_data1<-cv_data %>% select(-ann_return)
+y_predicted <- predict(lasso.model, newx = data.matrix(cv_data1))
+mean_y<-lapply(y, mean, na.rm = TRUE)
+sst <- sum((y - mean_y)^2)
+sst
+sse <- sum((y_predicted - y)^2)
+sse
+
+# R squared
+rsq <- 1 - sse / sst
+rsq
+
+# L1 Regularization
+plot(glmfit$glmnet.fit)
+
+# Q-Q Plots for non-zero variables
+dev.new(width=50, height=50)
+qqnorm(train_data1$int_rate)
+qqnorm(train_data1$loan_amnt)
+
+# Gradient Boosted Model
+
+# for reproducibility
+set.seed(123)
+
+# train GBM model
+gbm.fit <- gbm(
+  formula = ann_return ~ .,
+  distribution = "gaussian",
+  data = train_data%>%select(-loan_status),
+  bag.fraction=0.5,
+  n.trees = 2000,
+  interaction.depth = 4,
+  shrinkage = 0.01,
+  cv.folds = 5,
+  n.cores = NULL, # will use all cores by default
+  verbose = FALSE
+)  
+
+
+# print results
+print(gbm.fit)
+summary(gbm.fit)
+min_MSE <- which.min(gbm.fit$cv.error)
+bestIter<-gbm.perf(gbm.fit, method='cv')
+gbm.perf(gbm.fit)
+sqrt(min(gbm.fit$cv.error))
+
+#EVALUATION
+y<-cv_data %>% select(ann_return)
+scores_gbmM2<- predict(gbm.fit, newdata=cv_data%>%select(-loan_status), n.tree= bestIter, type="response")
+mean_y<-lapply(y, mean, na.rm = TRUE)
+sst <- sum((y - mean_y)^2)
+sst
+sse <- sum((scores_gbmM2 - y)^2)
+sse
+# R squared
+rsq <- 1 - sse / sst
+rsq
+
+# Random Forest model
+
+rf.m1 <- ranger(ann_return ~., data=train_data%>%select(-loan_status))
+
+#Basic evaluation
+sqrt(rf.m1$prediction.error)
+
+#EVALUATION on Test Data
+y<-cv_data %>% select(ann_return)
+pred.ranger = predict(rf.m1, cv_data%>%select(-loan_status))
+mean_y<-lapply(y, mean, na.rm = TRUE)
+sst <- sum((y - mean_y)^2)
+sst
+sse <- sum((pred.ranger[1] - y)^2)
+sse
+# R squared
+rsq <- 1 - sse / sst
+rsq
+
+#-----------------------------Q4--------------------------#
+#More Cleaning
+df<-df%>%select(-c(disbursement_method,hardship_flag,policy_code,zip_code,title,term,earliest_cr_line,last_credit_pull_d))
+leakage<- c("funded_amnt","funded_amnt_inv","issue_d","out_prncp","out_prncp_inv","total_pymnt","total_pymnt_inv","total_rec_prncp","total_rec_int","total_rec_late_fee","recoveries","collection_recovery_fee","last_pymnt_d","last_pymnt_amnt","collections_12_mths_ex_med","acc_now_delinq","tot_coll_amt")
+#leakage<- c("issue_d","total_pymnt","total_pymnt_inv","funded_amnt","funded_amnt_inv","out_prncp","out_prncp_inv","total_rec_prncp","total_rec_int","total_rec_late_fee","recoveries","collection_recovery_fee","last_pymnt_d","tot_coll_amt")
+nm<- names(df) %in% leakage
+df<-df[!nm]
+str(df)
+df%>%sapply(n_distinct)
+
+str(df$ann_return)
+
+df$grade<-as.factor(df$grade)
+df$sub_grade<-as.factor(df$sub_grade)
+df$home_ownership<-as.factor(df$home_ownership)
+df$loan_status<-as.factor(df$loan_status)
+df$purpose<-as.factor(df$purpose)
+df$addr_state<-as.factor(df$addr_state)
+df$debt_settlement_flag<-as.factor(df$debt_settlement_flag)
+df$initial_list_status<-as.factor(df$initial_list_status)
+df$application_type<-as.factor(df$application_type)
+df$verification_status<-as.factor(df$verification_status)
+df$int_rate <- round(df$int_rate)
+df$dti <- round(df$dti)
+
+str(df$ann_return)
+str(df)
+
+#Variable Importance
+
+aucAll<- sapply(df %>% mutate_if(is.factor, as.numeric) %>% select_if(is.numeric), auc, response=df$loan_status) 
+aucAll
+m<-aucAll[aucAll>0.5]
+# m<-aucAll
+str(m)
+m<-as.data.frame(m)
+library(data.table)
+setDT(m, keep.rownames = TRUE)[]
+
+colz<-names(df) %in% m$rn
+zd<-df[colz]
+str(zd)
+df<-zd
+
+#Unclass
+levels(unclass(df$loan_status)-1)
+head(unclass(df$loan_status)-1,20)
+head(df$loan_status,20)
+
+#Split into train cv test
+
+trn=0.8
+nr<-nrow(df)
+trnd<-sample(1:nr,trn*nr,replace=FALSE)
+train_data<-df[trnd,]
+df_nl2<-df[-trnd,]
+str(train_data)
+
+cv_data<-df[-trnd,]
+
+str(cv_data$ann_return)
+str(cv_data$loan_status)
+
+#Prediction
+
+#GBM - Final Model
+
+gbm_M2 <- gbm(formula=unclass(loan_status)-1 ~.,
+              data=train_data%>%select(-addr_state,-ann_return),
+              distribution = "bernoulli", n.trees=2652, shrinkage=0.01, interaction.depth = 2,
+              bag.fraction=0.5, cv.folds = 5, n.cores=16)
+
+print(gbm_M2)
+summary(gbm_M2, cbars=10)
+
+bestIter<-gbm.perf(gbm_M2, method='cv')
+gbm.perf(gbm_M2)
+
+#Performance - ROC
+scores_gbmM2<- predict(gbm_M2, newdata=cv_data, n.tree= bestIter, type="response")
+pred_gbmM2=prediction(scores_gbmM2, cv_data$loan_status,label.ordering = c("Charged Off", "Fully Paid"))
+#label.ordering here specifies the 'negative', 'positive' class labels
+#aucPerf_gbmM2 <-performance(pred_gbmM2, "tpr", "fpr")
+#plot(aucPerf_gbmM2)
+#abline(a=0, b= 1)
+
+
+#AUC value
+#aucPerf_gbmM2=performance(pred_gbmM2, "auc")
+#aucPerf_gbmM2@y.values
+
+# Confusion Matrix
+
+predbin<- as.factor(ifelse(scores_gbmM2>0.5,1,0))
+cv_data$loan_status1<-as.factor(ifelse(cv_data$loan_status=="Fully Paid",1,0))
+confusionMatrix(predbin,cv_data$loan_status1)
+levels(cv_data$loan_status)
+unique(predbin)
+
+str(cv_data$loan_status)
+
+
+#Investment
+
+#parameter Selection
+# create hyperparameter grid
+#hyper_grid <- expand.grid(
+#  shrinkage = c(0.001,.01, .1),
+# tree.depth = c(2, 5),
+# optimal_trees = 0,               # a place to dump results
+# min_RMSE = 0                     # a place to dump results
+#)
+
+# total number of combinations
+#nrow(hyper_grid)
+
+
+#system.time(for(i in 1:nrow(hyper_grid)) {
+
+# # reproducibility
+# set.seed(123)
+
+# train model
+# gbm.tune <- gbm(
+#   formula = ann_return ~ .,
+#   distribution = "gaussian",
+#   data = train_data%>%select(-loan_status),
+#   n.trees = 3000,
+#   interaction.depth = hyper_grid$tree.depth[i],
+#   shrinkage = hyper_grid$shrinkage[i],
+#   train.fraction = .75,
+#   n.cores = NULL, # will use all cores by default
+#    verbose = FALSE
+#  )
+
+# add min training error and trees to grid
+#  hyper_grid$optimal_trees[i] <- which.min(gbm.tune$valid.error)
+# hyper_grid$minError[i] <- min(gbm.tune$valid.error)
+#}
+#)
+
+#hyper_grid %>% 
+#  dplyr::arrange(min_RMSE) %>%
+#  head(10)
+
+
+# for reproducibility
+set.seed(123)
+
+# train GBM model
+gbm.fit <- gbm(
+  formula = ann_return ~ .,
+  distribution = "gaussian",
+  data = train_data%>%select(-loan_status),
+  bag.fraction=0.5,
+  n.trees = 2000,
+  interaction.depth = 4,
+  shrinkage = 0.001,
+  cv.folds = 5,
+  n.cores = NULL, # will use all cores by default
+  verbose = FALSE
+)  
+
+
+# print results
+print(gbm.fit)
+summary(gbm.fit)
+min_MSE <- which.min(gbm.fit$cv.error)
+bestIter<-gbm.perf(gbm.fit, method='cv')
+gbm.perf(gbm.fit)
+sqrt(min(gbm.fit$cv.error))
+
+#EVALUATION
+y<-cv_data %>% select(ann_return)
+scores_gbmMI<- predict(gbm.fit, newdata=cv_data%>%select(-loan_status), n.tree= bestIter, type="response")
+mean_y<-lapply(y, mean, na.rm = TRUE)
+sst <- sum((y - mean_y)^2)
+sst
+sse <- sum((scores_gbmMI - y)^2)
+sse
+# R squared
+rsq <- 1 - sse / sst
+rsq
+
+
+Result1 = data.frame(scores_gbmM2,predbin,cv_data$loan_status)
+Result2 = data.frame(scores_gbmMI,cv_data$ann_return)
+result3 = data.frame(Result1,Result2,cv_data$grade,cv_data$int_rate)
+mean(predbin==cv_data$loan_status)
+mean(scores_gbmMI)
+mean(cv_data$ann_return)
+sd(scores_gbmMI)
+sd(cv_data$ann_return)
+str(result3)
+#View(result3)
+
+
+#M1
+DCT = result3 %>% mutate(tile= ntile(-scores_gbmM2,10))
+DCT = DCT %>% mutate(tile2= ntile(-scores_gbmMI,10))
+DCF = DCT
+DCF = DCF %>% group_by(tile) %>% summarise(count=n(),AvgGBMPredScore =mean(scores_gbmM2),
+                                           AvgGBMInvstScore =mean(scores_gbmMI),
+                                           NumDef= sum(cv_data.loan_status=="Charged Off"),
+                                           AvgIntrate=mean(cv_data.int_rate),
+                                           AvgRealRet=mean(cv_data.ann_return),
+                                           MinRealRet=min(cv_data.ann_return),
+                                           MaXRealRet=max(cv_data.ann_return),
+                                           TOTGrA=sum(cv_data.grade=="A"),
+                                           TOTGrB=sum(cv_data.grade=="B"),
+                                           TOTGrC=sum(cv_data.grade=="C"),
+                                           TOTGrD=sum(cv_data.grade=="D"),
+                                           TOTGrE=sum(cv_data.grade=="E"),
+                                           TOTGrF=sum(cv_data.grade=="F"),
+                                           TOTGrG=sum(cv_data.grade=="G")) 
+#View(DCF1)
+DCF1= DCT[(DCT$tile <2),]
+DCF2 = DCF1 %>%head(1000)%>% summarise(count=n(),AvgGBMPredScore =mean(scores_gbmM2),
+                                       AvgGBMInvstScore =mean(scores_gbmMI),
+                                       NumDef= sum(cv_data.loan_status=="Charged Off"),
+                                       AvgIntrate=mean(cv_data.int_rate),
+                                       AvgRealRet=mean(cv_data.ann_return),
+                                       MinRealRet=min(cv_data.ann_return),
+                                       MaXRealRet=max(cv_data.ann_return),
+                                       TOTGrA=sum(cv_data.grade=="A"),
+                                       TOTGrB=sum(cv_data.grade=="B"),
+                                       TOTGrC=sum(cv_data.grade=="C"),
+                                       TOTGrD=sum(cv_data.grade=="D"),
+                                       TOTGrE=sum(cv_data.grade=="E"),
+                                       TOTGrF=sum(cv_data.grade=="F"),
+                                       TOTGrG=sum(cv_data.grade=="G"))
+write.table(DCF2,sep=",")
+
+#M2
+DCS = DCT
+DCS = DCS %>% group_by(tile2) %>% summarise(count=n(),AvgGBMPredScore =mean(scores_gbmM2),
+                                            AvgGBMInvstScore =mean(scores_gbmMI),
+                                            NumDef= sum(cv_data.loan_status=="Charged Off"),
+                                            AvgIntrate=mean(cv_data.int_rate),
+                                            AvgRealRet=mean(cv_data.ann_return),
+                                            MinRealRet=min(cv_data.ann_return),
+                                            MaXRealRet=max(cv_data.ann_return),
+                                            TOTGrA=sum(cv_data.grade=="A"),
+                                            TOTGrB=sum(cv_data.grade=="B"),
+                                            TOTGrC=sum(cv_data.grade=="C"),
+                                            TOTGrD=sum(cv_data.grade=="D"),
+                                            TOTGrE=sum(cv_data.grade=="E"),
+                                            TOTGrF=sum(cv_data.grade=="F"),
+                                            TOTGrG=sum(cv_data.grade=="G")) 
+View(DCS)
+write.table(DCS,sep=",")
+DCS1= DCT[(DCT$tile2 <2),]
+DCS2 = DCS1 %>%head(1000)%>% summarise(count=n(),AvgGBMPredScore =mean(scores_gbmM2),
+                                       AvgGBMInvstScore =mean(scores_gbmMI),
+                                       NumDef= sum(cv_data.loan_status=="Charged Off"),
+                                       AvgIntrate=mean(cv_data.int_rate),
+                                       AvgRealRet=mean(cv_data.ann_return),
+                                       MinRealRet=min(cv_data.ann_return),
+                                       MaXRealRet=max(cv_data.ann_return),
+                                       TOTGrA=sum(cv_data.grade=="A"),
+                                       TOTGrB=sum(cv_data.grade=="B"),
+                                       TOTGrC=sum(cv_data.grade=="C"),
+                                       TOTGrD=sum(cv_data.grade=="D"),
+                                       TOTGrE=sum(cv_data.grade=="E"),
+                                       TOTGrF=sum(cv_data.grade=="F"),
+                                       TOTGrG=sum(cv_data.grade=="G"))
+write.table(DCS2,sep=",")
+
+#Combining Models
+
+#approach 1
+#Decile Table
+
+DCSelect = DCT[(DCT$tile2 <2),]
+DCSelect1 = DCSelect %>% group_by(tile) %>% summarise(count=n(),AvgGBMPredScore =mean(scores_gbmM2),
+                                                      AvgGBMInvstScore =mean(scores_gbmMI),
+                                                      NumDef= sum(cv_data.loan_status=="Charged Off"),
+                                                      AvgIntrate=mean(cv_data.int_rate),
+                                                      AvgRealRet=mean(cv_data.ann_return),
+                                                      MinRealRet=min(cv_data.ann_return),
+                                                      MaXRealRet=max(cv_data.ann_return),
+                                                      TOTGrA=sum(cv_data.grade=="A"),
+                                                      TOTGrB=sum(cv_data.grade=="B"),
+                                                      TOTGrC=sum(cv_data.grade=="C"),
+                                                      TOTGrD=sum(cv_data.grade=="D"),
+                                                      TOTGrE=sum(cv_data.grade=="E"),
+                                                      TOTGrF=sum(cv_data.grade=="F"),
+                                                      TOTGrG=sum(cv_data.grade=="G")) 
+view(DCSelect)
+write.table(DCSelect1,sep=",")
+
+DCselect2 = DCSelect %>% arrange(desc(scores_gbmM2)) %>%head(1000)
+DCselect3 = DCselect2 %>% summarise(count=n(),AvgGBMPredScore =mean(scores_gbmM2),
+                                    AvgGBMInvstScore =mean(scores_gbmMI),
+                                    NumDef= sum(cv_data.loan_status=="Charged Off"),
+                                    AvgIntrate=mean(cv_data.int_rate),
+                                    AvgRealRet=mean(cv_data.ann_return),
+                                    MinRealRet=min(cv_data.ann_return),
+                                    MaXRealRet=max(cv_data.ann_return),
+                                    TOTGrA=sum(cv_data.grade=="A"),
+                                    TOTGrB=sum(cv_data.grade=="B"),
+                                    TOTGrC=sum(cv_data.grade=="C"),
+                                    TOTGrD=sum(cv_data.grade=="D"),
+                                    TOTGrE=sum(cv_data.grade=="E"),
+                                    TOTGrF=sum(cv_data.grade=="F"),
+                                    TOTGrG=sum(cv_data.grade=="G"))
+View(DCselect2)
+write.table(DCselect3,sep=",")
+#approach 2
+
+# Multiply Scores
+FinalScores = data.frame(result3)
+FinalScores= FinalScores %>% mutate(ExpecRet = scores_gbmM2 * scores_gbmMI) %>% arrange(desc(ExpecRet))
+FinalScores1= FinalScores %>% mutate(Decile= ntile(-ExpecRet,10)) %>% group_by(Decile) %>% summarise(count=n(),AvgGBMPredScore =mean(scores_gbmM2),
+                                                                                                     AvgGBMInvstScore =mean(scores_gbmMI),
+                                                                                                     NumDef= sum(cv_data.loan_status=="Charged Off"),
+                                                                                                     AvgIntrate=mean(cv_data.int_rate),
+                                                                                                     AvgRealRet=mean(cv_data.ann_return),
+                                                                                                     MinRealRet=min(cv_data.ann_return),
+                                                                                                     MaXRealRet=max(cv_data.ann_return),
+                                                                                                     TOTGrA=sum(cv_data.grade=="A"),
+                                                                                                     TOTGrB=sum(cv_data.grade=="B"),
+                                                                                                     TOTGrC=sum(cv_data.grade=="C"),
+                                                                                                     TOTGrD=sum(cv_data.grade=="D"),
+                                                                                                     TOTGrE=sum(cv_data.grade=="E"),
+                                                                                                     TOTGrF=sum(cv_data.grade=="F"),
+                                                                                                     TOTGrG=sum(cv_data.grade=="G"))
+
+Finalscores2 = FinalScores %>% head(1000) %>% summarise(count=n(),AvgGBMPredScore =mean(scores_gbmM2),
+                                                        AvgGBMInvstScore =mean(scores_gbmMI),
+                                                        NumDef= sum(cv_data.loan_status=="Charged Off"),
+                                                        AvgIntrate=mean(cv_data.int_rate),
+                                                        AvgRealRet=mean(cv_data.ann_return),
+                                                        MinRealRet=min(cv_data.ann_return),
+                                                        MaXRealRet=max(cv_data.ann_return),
+                                                        TOTGrA=sum(cv_data.grade=="A"),
+                                                        TOTGrB=sum(cv_data.grade=="B"),
+                                                        TOTGrC=sum(cv_data.grade=="C"),
+                                                        TOTGrD=sum(cv_data.grade=="D"),
+                                                        TOTGrE=sum(cv_data.grade=="E"),
+                                                        TOTGrF=sum(cv_data.grade=="F"),
+                                                        TOTGrG=sum(cv_data.grade=="G"))
+
+view(Finalscores2)
+write.table(Finalscores2,sep=",")
+
+#---------------------Q5----------------------#
+
+#More Cleaning
+df<-df%>%select(-c(disbursement_method,hardship_flag,policy_code,zip_code,title,term,earliest_cr_line,last_credit_pull_d))
+leakage<- c("funded_amnt","funded_amnt_inv","issue_d","out_prncp","out_prncp_inv","total_pymnt","total_pymnt_inv","total_rec_prncp","total_rec_int","total_rec_late_fee","recoveries","collection_recovery_fee","last_pymnt_d","last_pymnt_amnt","collections_12_mths_ex_med","acc_now_delinq","tot_coll_amt")
+#leakage<- c("issue_d","total_pymnt","total_pymnt_inv","funded_amnt","funded_amnt_inv","out_prncp","out_prncp_inv","total_rec_prncp","total_rec_int","total_rec_late_fee","recoveries","collection_recovery_fee","last_pymnt_d","tot_coll_amt")
+nm<- names(df) %in% leakage
+df<-df[!nm]
+str(df)
+df%>%sapply(n_distinct)
+
+str(df$grade)
+
+#Removing Higher Grade loans
+str(df$grade)
+df= df[!(df$grade=="A"|df$grade=="B"),]
+str(df$grade)
+
+
+df$grade<-as.factor(df$grade)
+df$sub_grade<-as.factor(df$sub_grade)
+df$home_ownership<-as.factor(df$home_ownership)
+df$loan_status<-as.factor(df$loan_status)
+df$purpose<-as.factor(df$purpose)
+df$addr_state<-as.factor(df$addr_state)
+df$debt_settlement_flag<-as.factor(df$debt_settlement_flag)
+df$initial_list_status<-as.factor(df$initial_list_status)
+df$application_type<-as.factor(df$application_type)
+df$verification_status<-as.factor(df$verification_status)
+df$int_rate <- round(df$int_rate)
+df$dti <- round(df$dti)
+
+str(df$grade)
+str(df)
+
+#Variable Importance
+
+aucAll<- sapply(df %>% mutate_if(is.factor, as.numeric) %>% select_if(is.numeric), auc, response=df$loan_status) 
+aucAll
+m<-aucAll[aucAll>0.4]
+# m<-aucAll
+str(m)
+m<-as.data.frame(m)
+library(data.table)
+setDT(m, keep.rownames = TRUE)[]
+
+
+colz<-names(df) %in% m$rn
+zd<-df[colz]
+str(zd)
+df<-zd
+
+
+
+str(df$grade)
+
+#Unclass
+levels(unclass(df$loan_status)-1)
+head(unclass(df$loan_status)-1,20)
+head(df$loan_status,20)
+
+#Split into train cv test
+
+trn=0.8
+nr<-nrow(df)
+trnd<-sample(1:nr,trn*nr,replace=FALSE)
+train_data<-df[trnd,]
+df_nl2<-df[-trnd,]
+str(train_data)
+
+cv_data<-df[-trnd,]
+
+str(cv_data$grade)
+
+#Prediction
+
+#GBM - Final Model
+
+gbm_M2 <- gbm(formula=unclass(loan_status)-1 ~.,
+              data=train_data%>%select(-addr_state,-ann_return),
+              distribution = "bernoulli", n.trees=2652, shrinkage=0.01, interaction.depth = 2,
+              bag.fraction=0.5, cv.folds = 5, n.cores=16)
+
+print(gbm_M2)
+summary(gbm_M2, cbars=10)
+
+bestIter<-gbm.perf(gbm_M2, method='cv')
+gbm.perf(gbm_M2)
+
+#Performance - ROC
+scores_gbmM2<- predict(gbm_M2, newdata=cv_data, n.tree= bestIter, type="response")
+pred_gbmM2=prediction(scores_gbmM2, cv_data$loan_status,label.ordering = c("Charged Off", "Fully Paid"))
+#label.ordering here specifies the 'negative', 'positive' class labels
+#aucPerf_gbmM2 <-performance(pred_gbmM2, "tpr", "fpr")
+#plot(aucPerf_gbmM2)
+#abline(a=0, b= 1)
+
+
+#AUC value
+#aucPerf_gbmM2=performance(pred_gbmM2, "auc")
+#aucPerf_gbmM2@y.values
+
+# Confusion Matrix
+
+predbin<- as.factor(ifelse(scores_gbmM2>0.5,1,0))
+cv_data$loan_status1<-as.factor(ifelse(cv_data$loan_status=="Fully Paid",1,0))
+confusionMatrix(predbin,cv_data$loan_status1)
+levels(cv_data$loan_status)
+unique(predbin)
+
+str(cv_data$loan_status)
+
+
+#Investment
+
+#parameter Selection
+# create hyperparameter grid
+#hyper_grid <- expand.grid(
+#  shrinkage = c(0.001,.01, .1),
+# tree.depth = c(2, 5),
+# optimal_trees = 0,               # a place to dump results
+# min_RMSE = 0                     # a place to dump results
+#)
+
+# total number of combinations
+#nrow(hyper_grid)
+
+
+#system.time(for(i in 1:nrow(hyper_grid)) {
+
+# # reproducibility
+# set.seed(123)
+
+# train model
+# gbm.tune <- gbm(
+#   formula = ann_return ~ .,
+#   distribution = "gaussian",
+#   data = train_data%>%select(-loan_status),
+#   n.trees = 3000,
+#   interaction.depth = hyper_grid$tree.depth[i],
+#   shrinkage = hyper_grid$shrinkage[i],
+#   train.fraction = .75,
+#   n.cores = NULL, # will use all cores by default
+#    verbose = FALSE
+#  )
+
+# add min training error and trees to grid
+#  hyper_grid$optimal_trees[i] <- which.min(gbm.tune$valid.error)
+# hyper_grid$minError[i] <- min(gbm.tune$valid.error)
+#}
+#)
+
+#hyper_grid %>% 
+#  dplyr::arrange(min_RMSE) %>%
+#  head(10)
+
+
+# for reproducibility
+set.seed(123)
+
+# train GBM model
+gbm.fit <- gbm(
+  formula = ann_return ~ .,
+  distribution = "gaussian",
+  data = train_data%>%select(-loan_status),
+  bag.fraction=0.5,
+  n.trees = 2000,
+  interaction.depth = 4,
+  shrinkage = 0.001,
+  cv.folds = 5,
+  n.cores = NULL, # will use all cores by default
+  verbose = FALSE
+)  
+
+
+# print results
+print(gbm.fit)
+summary(gbm.fit)
+min_MSE <- which.min(gbm.fit$cv.error)
+bestIter<-gbm.perf(gbm.fit, method='cv')
+gbm.perf(gbm.fit)
+sqrt(min(gbm.fit$cv.error))
+
+#EVALUATION
+y<-cv_data %>% select(ann_return)
+scores_gbmMI<- predict(gbm.fit, newdata=cv_data%>%select(-loan_status), n.tree= bestIter, type="response")
+mean_y<-lapply(y, mean, na.rm = TRUE)
+sst <- sum((y - mean_y)^2)
+sst
+sse <- sum((scores_gbmMI - y)^2)
+sse
+# R squared
+rsq <- 1 - sse / sst
+rsq
+
+
+Result1 = data.frame(scores_gbmM2,predbin,cv_data$loan_status)
+Result2 = data.frame(scores_gbmMI,cv_data$ann_return)
+Resultcv = data.frame(cv_data$grade, cv_data$int_rate)
+result3 = data.frame(Result1,Result2,Resultcv)
+mean(predbin==cv_data$loan_status1)
+mean(scores_gbmMI)
+mean(cv_data$ann_return)
+sd(scores_gbmMI)
+sd(cv_data$ann_return)
+str(result3)
+View(result3)
+
+#Comparison with Q4
+
+#
+#Decile Table
+DCT = result3 %>% mutate(tile= ntile(-scores_gbmM2,10))
+DCT = DCT %>% mutate(tile2= ntile(-scores_gbmMI,10))
+DCF = DCT
+DCF = DCF %>% arrange(desc(scores_gbmMI))  
+view(DCF)
+DCFSumm = DCF %>% summarise(count=n(),AvgGBMPredScore =mean(scores_gbmM2),
+                            AvgGBMInvstScore =mean(scores_gbmMI),
+                            NumDef= sum(cv_data.loan_status=="Charged Off"),
+                            AvgIntrate=mean(cv_data.int_rate),
+                            AvgRealRet=mean(cv_data.ann_return),
+                            MinRealRet=min(cv_data.ann_return),
+                            MaXRealRet=max(cv_data.ann_return),
+                            TOTGrA=sum(cv_data.grade=="A"),
+                            TOTGrB=sum(cv_data.grade=="B"),
+                            TOTGrC=sum(cv_data.grade=="C"),
+                            TOTGrD=sum(cv_data.grade=="D"),
+                            TOTGrE=sum(cv_data.grade=="E"),
+                            TOTGrF=sum(cv_data.grade=="F"),
+                            TOTGrG=sum(cv_data.grade=="G"))
+DCFNew = DCF %>% head(1000)%>% summarise(count=n(),AvgGBMPredScore =mean(scores_gbmM2),
+                                         AvgGBMInvstScore =mean(scores_gbmMI),
+                                         NumDef= sum(cv_data.loan_status=="Charged Off"),
+                                         AvgIntrate=mean(cv_data.int_rate),
+                                         AvgRealRet=mean(cv_data.ann_return),
+                                         MinRealRet=min(cv_data.ann_return),
+                                         MaXRealRet=max(cv_data.ann_return),
+                                         TOTGrA=sum(cv_data.grade=="A"),
+                                         TOTGrB=sum(cv_data.grade=="B"),
+                                         TOTGrC=sum(cv_data.grade=="C"),
+                                         TOTGrD=sum(cv_data.grade=="D"),
+                                         TOTGrE=sum(cv_data.grade=="E"),
+                                         TOTGrF=sum(cv_data.grade=="F"),
+                                         TOTGrG=sum(cv_data.grade=="G"))
+view(DCFNew)
+
+write.table(DCFNew,sep=",")
+
+DCF1= DCT[(DCT$tile <2),]
+DCF2 = DCF1 %>%head(1000)%>% summarise(count=n(),AvgGBMPredScore =mean(scores_gbmM2),
+                                       AvgGBMInvstScore =mean(scores_gbmMI),
+                                       NumDef= sum(cv_data.loan_status=="Charged Off"),
+                                       AvgIntrate=mean(cv_data.int_rate),
+                                       AvgRealRet=mean(cv_data.ann_return),
+                                       MinRealRet=min(cv_data.ann_return),
+                                       MaXRealRet=max(cv_data.ann_return),
+                                       TOTGrA=sum(cv_data.grade=="A"),
+                                       TOTGrB=sum(cv_data.grade=="B"),
+                                       TOTGrC=sum(cv_data.grade=="C"),
+                                       TOTGrD=sum(cv_data.grade=="D"),
+                                       TOTGrE=sum(cv_data.grade=="E"),
+                                       TOTGrF=sum(cv_data.grade=="F"),
+                                       TOTGrG=sum(cv_data.grade=="G"))
+write.table(DCF2,sep=",")
+
+DCS1= DCT[(DCT$tile2 <3),]
+view(DCS1)
+DCS2 = DCS1 %>%head(1000)%>% summarise(count=n(),AvgGBMPredScore =mean(scores_gbmM2),
+                                       AvgGBMInvstScore =mean(scores_gbmMI),
+                                       NumDef= sum(cv_data.loan_status=="Charged Off"),
+                                       AvgIntrate=mean(cv_data.int_rate),
+                                       AvgRealRet=mean(cv_data.ann_return),
+                                       MinRealRet=min(cv_data.ann_return),
+                                       MaXRealRet=max(cv_data.ann_return),
+                                       TOTGrA=sum(cv_data.grade=="A"),
+                                       TOTGrB=sum(cv_data.grade=="B"),
+                                       TOTGrC=sum(cv_data.grade=="C"),
+                                       TOTGrD=sum(cv_data.grade=="D"),
+                                       TOTGrE=sum(cv_data.grade=="E"),
+                                       TOTGrF=sum(cv_data.grade=="F"),
+                                       TOTGrG=sum(cv_data.grade=="G"))
+write.table(DCS2,sep=",")
